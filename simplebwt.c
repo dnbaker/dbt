@@ -85,11 +85,7 @@ int main(int argc, char *argv[])
   assert(SA[0]==n);
   if(fputc(Text[n-1],fbwt)==EOF) die("Error writing Bwt (1)");
   for(long i=1;i<=n;i++) {
-    if(SA[i]>0) 
-      e = fputc(Text[SA[i]-1],fbwt); // text char 
-    else
-      e = fputc(0,fbwt); // eof char
-    if(e==EOF) die("Error writing Bwt (2)");
+    if((e = fputc(SA[i] ? Text[SA[i] - 1]: 0, fbwt)) == EOF) die("Error writing Bwt (2)");
   }
   if(fclose(fbwt)!=0) die("Error closing BWT");;
   // deallocate

@@ -26,9 +26,7 @@ typedef struct _pair{
 } t_pair_k;
 
 int compare_k (const void * a, const void * b){
-  if(*(const uint_t *)a < *(const uint_t *)b) return -1;
-  if(*(const uint_t *)a > *(const uint_t *)b) return 1;
-return 0;
+  return *(const uint_t *)a - *(const uint_t *)b;
 }
 
 void stack_push_k(t_pair_k* STACK, int_t *top, uint_t idx, int_t lcp){
@@ -263,7 +261,7 @@ void induceSAl0_generalized(uint_t *SA,
     if(SA[i]>0) {
       j=SA[i]-1;
       if(chr(j)>=chr(j+1) ) {
-  if(chr(j)!=separator)//gsa-is
+         if(chr(j)!=separator)//gsa-is
           SA[bkt[chr(j)]++]=j;
         if(!suffix && i>0) SA[i]=0;
       }
@@ -283,7 +281,7 @@ void induceSAs0_generalized(uint_t *SA,
       j=SA[i]-1;
       if(chr(j)<=chr(j+1) && bkt[chr(j)]<i) {
         if(chr(j)!=separator)
-    SA[bkt[chr(j)]--]=j;
+            SA[bkt[chr(j)]--]=j;
         if(!suffix) SA[i]=0;
       }
     }
