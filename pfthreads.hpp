@@ -12,6 +12,8 @@ extern "C" {
 #define Buf_size 40
 #define Min_bwt_range 100000
 #define Sa_block      100000
+#define SEQID_MASK (0x7FFFFFFFu)
+#define SEQID_HIGHER_BIT (0x80000000u)
 
 //static size_t get_bwt_size(char *name);
 static int get_bwt_fd(char *name);
@@ -58,7 +60,7 @@ void *sa2da_body(void *v)
     // process range [start,end]
     for(long i=r.start;i<r.end;i++) {// see sa2da()
       int_t suffixLen = getlen(d->sa[i],d->eos,d->dwords,&seqid);
-      assert(seqid<=0x7FFFFFFF);     // seqid uses at most 31 bits
+      assert(seqid<=SEQID_MASK);     // seqid uses at most 31 bits
       assert(suffixLen>=d->lcp[i]);     // suffix length cannot be shorter than lcp
       assert(suffixLen<=d->wlen[seqid]);// suffix length cannot be larger than word length
       if(suffixLen==d->wlen[seqid]) {   // test if full word
@@ -86,7 +88,7 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
 {
   (void) d;   // d[] only used in assertions;
   long words=0;
-  if(dwords>0x7FFFFFFF) {
+  if(dwords>SEQID_MASK) {
     cerr << "Too many words in the dictionary. Current limit: 2^31-1\n";
     exit(1);
   }
@@ -110,7 +112,7 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
     uint32_t seqid; 
     for(long i=dwords+w+1; i<dsize; i++) {     // we are considering d[sa[i]....]     
       int_t suffixLen = getlen(sa[i],eos,dwords,&seqid);
-      assert(seqid<=0x7FFFFFFF);     // seqid uses at most 31 bits
+      assert(seqid<=SEQID_MASK);     // seqid uses at most 31 bits
       assert(suffixLen>=lcp[i]);     // suffix length cannot be shorter than lcp
       assert(suffixLen<=wlen[seqid]);// suffix length cannot be larger than word length
       if(suffixLen==wlen[seqid]) {   // test if full word
@@ -324,7 +326,7 @@ static void *merge_body(void *v)
       next = i+1;  // prepare for next iteration  
       // discard if it is a small suffix 
       if(d->suflen[i]<=d->w) continue;
-      uint32_t seqid = d->da[i]&0x7FFFFFFF;
+      uint32_t seqid = d->da[i]&SEQID_MASK;
       assert(seqid<d->dwords);
       // ----- simple case: the suffix is a full word 
       if(d->suflen[i]==d->wlen[seqid]) {
@@ -351,8 +353,8 @@ static void *merge_body(void *v)
       vector<uint32_t> id2merge(1,seqid); 
       vector<uint8_t> char2write(1,d->dict[d->eos[seqid]-d->suflen[i]-1]);
       while(next<r.end && d->suflen[next]==d->suflen[i]) {
-        seqid = d->da[next]&0x7FFFFFFF;
-        if(d->da[next]&0x80000000u) {
+        seqid = d->da[next]&SEQID_MASK;
+        if(d->da[next]&SEQID_HIGHER_BIT) {
           assert(d->suflen[next]!=d->wlen[seqid]);   // the lcp cannot be greater than suffixLen
           id2merge.push_back(seqid);           // sequence to consider
           char2write.push_back(d->dict[d->eos[seqid]-d->suflen[next]-1]);  // corresponding char
@@ -470,7 +472,7 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
     next = i+1;  // prepare for next iteration  
     // discard if it is a small suffix 
     if(suflen[i]<=arg.w) continue;
-    uint32_t seqid = da[i]&0x7FFFFFFF;
+    uint32_t seqid = da[i]&SEQID_MASK;
     assert(seqid<dwords);
     entries += istart[seqid+1]-istart[seqid];
     // ----- simple case: the suffix is a full word 
@@ -480,8 +482,8 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
     }
     // ----- hard case: there can be a group of equal suffixes starting at i
     while(next<dasize && suflen[next]==suflen[i]) {
-      seqid = da[next]&0x7FFFFFFF;
-      if(da[next]&0x80000000u) {
+      seqid = da[next]&SEQID_MASK;
+      if(da[next]&SEQID_HIGHER_BIT) {
         assert(suflen[next]!=wlen[seqid]);   // the lcp cannot be greater than suffixLen
         entries += istart[seqid+1]-istart[seqid];
         next++;
