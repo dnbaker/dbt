@@ -77,133 +77,16 @@
  * pfbwt algorithm.
  * 
  */
-#include <assert.h>
-#include <errno.h>
-#include <unistd.h>
-#include <stdint.h>
-#include <sys/stat.h>
-#include <stdexcept>
-#include <iostream>
-#include <iomanip>
-#include <sstream>
-#include <ctime>
-#include <string>
-#include <fstream>
-#include <algorithm>
-#include <random>
-#include <vector>
-#include <map>
-#ifdef GZSTREAM
-#include <gzstream.h>
-#endif
-extern "C" {
-#include "utils.h"
-}
+#include "newscan.hpp"
+#include <cstring>
 
 using namespace std;
 using namespace __gnu_cxx;
 
 
 
-// =============== algorithm limits =================== 
-// maximum number of distinct words
-#define MAX_DISTINCT_WORDS (INT32_MAX -1)
-typedef uint32_t word_int_t;
-// maximum number of occurrences of a single word
-#define MAX_WORD_OCC (UINT32_MAX)
-typedef uint32_t occ_int_t;
 
-// values of the wordFreq map: word, its number of occurrences, and its rank
-struct word_stats {
-  string str;
-  occ_int_t occ;
-  word_int_t rank=0;
-};
-
-// -------------------------------------------------------------
-// struct containing command line parameters and other globals
-struct Args {
-   string inputFileName = "";
-   string parse0ext = EXTPARS0;    // extension tmp parse file 
-   string parseExt =  EXTPARSE;    // extension final parse file  
-   string occExt =    EXTOCC;      // extension occurrences file  
-   string dictExt =   EXTDICT;     // extension dictionary file  
-   string lastExt =   EXTLST;      // extension file containing last chars   
-   string saExt =     EXTSAI;      // extension file containing sa info   
-   int w = 10;            // sliding window size and its default 
-   int p = 100;           // modulus for establishing stopping w-tuples 
-   bool SAinfo = false;   // compute SA information 
-   int th=0;              // number of helper threads
-   int verbose=0;         // verbosity level 
-};
-
-template<typename T, typename T2>
-T modexp(T b, T e, T2 m) {
-    if(e == 0) return 1;
-    T t = modexp(b, e>>1, m);
-    t *= t, t %= m;
-    if(e&1) t *=b, t %= m;
-    return t;
-}
-
-// -----------------------------------------------------------------
-// class to maintain a window in a string and its KR fingerprint
-struct KR_window {
-  int wsize;
-  int asize;
-  int *window;
-  static constexpr uint64_t prime = 1999999973;
-  uint64_t hash;
-  uint64_t tot_char;
-  uint64_t asize_pot;   // asize^(wsize-1) mod prime 
-  
-  KR_window(int w): wsize(w), asize(256), window(new int[w]), asize_pot(modexp(asize, wsize - 1, prime)) {
-    // alloc and clear window
-    reset();     
-  }
-  int       *begin()       {return window;}
-  const int *begin() const {return window;}
-  int       *end()       {return window + wsize;}
-  const int *end() const {return window + wsize;}
-  
-  // init window, hash, and tot_char 
-  void reset() {
-    std::fill(begin(), end(), 0);
-    // init hash value and related values
-    hash=tot_char=0;    
-  }
-  
-  uint64_t addchar(int c) {
-    int k = tot_char++ % wsize;
-    // complex expression to avoid negative numbers 
-    hash += (prime - (window[k]*asize_pot) % prime); // remove window[k] contribution  
-    hash = (asize*hash + c) % prime;      //  add char i 
-    window[k]=c;
-    // cerr << get_window() << " ~~ " << window << " --> " << hash << endl;
-    return hash; 
-  }
-  // debug only 
-  string get_window() const {
-    string w;
-    int k = (tot_char-1) % wsize;
-    for(int i=k+1;i<k+1+wsize;i++)
-      w.append(1,window[i%wsize]);
-    return w;
-  }
-  
-  ~KR_window() {
-    delete[] window;
-  } 
-
-};
 // -----------------------------------------------------------
-
-static void die(const string s);
-static void save_update_word(string& w, unsigned int minsize,map<uint64_t,word_stats>&  freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos);
-
-#ifndef NOTHREADS
-#include "newscan.hpp"
-#endif
 
 
 
@@ -220,12 +103,23 @@ uint64_t kr_hash(string s) {
     } 
     return hash; 
 }
+uint64_t kr_hash(const char *s) {
+    uint64_t hash = 0;
+    //const uint64_t prime = 3355443229;     // next prime(2**31+2**30+2**27)
+    const uint64_t prime = 27162335252586509; // next prime (2**54 + 2**53 + 2**47 + 2**13)
+    while(*s) {
+        int c = (unsigned char) *s++;
+        hash = (hash << 8) | c;
+        hash %= prime;
+    }
+    return hash; 
+}
 
 
 
 // save current word in the freq map and update it leaving only the 
 // last minsize chars which is the overlap with next word  
-static void save_update_word(string& w, unsigned int minsize,map<uint64_t,word_stats>&  freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos)
+static void save_update_word(string& w, unsigned int minsize, khash_t(stats) *freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos)
 {
   assert(pos==0 || w.size() > minsize);
   if(w.size() <= minsize) return;
@@ -233,30 +127,27 @@ static void save_update_word(string& w, unsigned int minsize,map<uint64_t,word_s
   uint64_t hash = kr_hash(w);
   if(fwrite(&hash,sizeof(hash),1,tmp_parse_file)!=1) die("parse write error");
 
-#ifndef NOTHREADS
-  xpthread_mutex_lock(&map_mutex,__LINE__,__FILE__);
-#endif  
   // update frequency table for current hash
-  if(freq.find(hash)==freq.end()) {
-      freq[hash].occ = 1; // new hash
-      freq[hash].str = w; 
+  khiter_t ki = kh_get(stats, freq, hash);
+  if(ki == kh_end(freq)) {
+      int khr;
+#ifndef NOTHREADS
+      std::lock_guard<std::mutex> lock(map_mutex);
+#endif
+      ki = kh_put(stats, freq, hash, &khr);
+      kh_val(freq, ki).occ = 1;
+      kh_val(freq, ki).str = static_cast<char *>(std::malloc(w.size() + 1));
+      std::memcpy(kh_val(freq, ki).str, w.data(), w.size() + 1);
   }
   else {
-      freq[hash].occ += 1; // known hash
-      if(freq[hash].occ <=0) {
-        cerr << "Emergency exit! Maximum # of occurence of dictionary word (";
-        cerr<< MAX_WORD_OCC << ") exceeded\n";
-        exit(1);
-      }
-      if(freq[hash].str != w) {
-        cerr << "Emergency exit! Hash collision for strings:\n";
-        cerr << freq[hash].str << "\n  vs\n" <<  w << endl;
-        exit(1);
+#ifndef NOTHREADS
+      std::lock_guard<std::mutex> lock(map_mutex);
+#endif
+      if(__builtin_expect(++kh_val(freq, ki).occ <= 0, 0)) throw std::runtime_error(std::string("Emergency exit: Maximum number of occurrences ") + std::to_string(MAX_WORD_OCC) + " exceeded.");
+      if(__builtin_expect(std::strcmp(kh_val(freq, ki).str, w.data()), 0)) {
+        throw std::runtime_error(std::string("Emergency exit! Hash collision for strings: ") + kh_val(freq, ki).str);
       }
   }
-#ifndef NOTHREADS
-  xpthread_mutex_unlock(&map_mutex,__LINE__,__FILE__);
-#endif
   // output char w+1 from the end
   if(fputc(w[w.size()- minsize-1],last)==EOF) die("Error writing to .last file");
   // compute ending position +1 of current word and write it to sa file 
@@ -272,7 +163,7 @@ static void save_update_word(string& w, unsigned int minsize,map<uint64_t,word_s
 
 // prefix free parse of file fnam. w is the window size, p is the modulus 
 // use a KR-hash as the word ID that is immediately written to the parse file
-uint64_t process_file(Args& arg, map<uint64_t,word_stats>& wordFreq)
+uint64_t process_file(Args& arg, khash_t(stats) *wordFreq)
 {
   //open a, possibly compressed, input file
   string fnam = arg.inputFileName;
@@ -334,9 +225,9 @@ bool pstringCompare(const string *a, const string *b)
 
 // given the sorted dictionary and the frequency map write the dictionary and occ files
 // also compute the 1-based rank for each hash
-void writeDictOcc(Args &arg, map<uint64_t,word_stats> &wfreq, vector<const string *> &sortedDict)
+void writeDictOcc(Args &arg, khash_t(stats) *wfreq, vector<const char *> &sortedDict)
 {
-  assert(sortedDict.size() == wfreq.size());
+  assert(sortedDict.size() == kh_size(wfreq));
   // open dictionary and occ files 
   string fdictname = arg.inputFileName + "." + arg.dictExt;
   FILE *fdict = fopen(fdictname.c_str(),"wb");
@@ -347,11 +238,14 @@ void writeDictOcc(Args &arg, map<uint64_t,word_stats> &wfreq, vector<const strin
   
   word_int_t wrank = 1; // current word rank (1 based)
   for(auto x: sortedDict) {
-    size_t s = fwrite((*x).data(),1,(*x).size(), fdict);
-    if(s!=(*x).size()) die("Error writing to " + fdictname);
+    size_t sl = std::strlen(x);
+    size_t s = fwrite(x, 1, sl, fdict);
+    if(s!=sl) die("Error writing to " + fdictname);
     if(fputc(EndOfWord,fdict)==EOF) die("Error writing EndOfWord to " + fdictname);
-    uint64_t hash = kr_hash(*x);
-    auto& wf = wfreq.at(hash);
+    uint64_t hash = kr_hash(x);
+    khiter_t ki = kh_get(stats, wfreq, hash);
+    if(ki == kh_end(wfreq)) throw 1; // TODO: better error message
+    auto &wf = kh_val(wfreq, ki);
     assert(wf.occ>0);
     s = fwrite(&wf.occ,sizeof(wf.occ),1, focc);
     if(s!=1) die("Error writing to " + foccname);
@@ -363,29 +257,36 @@ void writeDictOcc(Args &arg, map<uint64_t,word_stats> &wfreq, vector<const strin
   if(fclose(fdict)!=0) die("Error closing" + fdictname);
 }
 
-void remapParse(Args &arg, map<uint64_t,word_stats> &wfreq)
+void remapParse(Args &arg, khash_t(stats) *wfreq)
 {
   // open parse files. the old parse can be stored in a single file or in multiple files
   mFile *moldp = mopen_aux_file(arg.inputFileName.c_str(), arg.parse0ext.c_str(), arg.th);
   FILE *newp = open_aux_file(arg.inputFileName.c_str(), arg.parseExt.c_str(), "wb");
 
   // recompute occ as an extra check 
-  vector<occ_int_t> occ(wfreq.size()+1,0); // ranks are zero based 
+  vector<occ_int_t> occ(kh_size(wfreq)+1,0); // ranks are zero based 
   uint64_t hash;
   while(true) {
     size_t s = mfread(&hash,sizeof(hash),1,moldp);
     if(s==0) break;
     if(s!=1) die("Unexpected parse EOF");
-    word_int_t rank = wfreq.at(hash).rank;
-    occ[rank]++;
+    word_int_t rank;
+    {
+        auto it = kh_get(stats, wfreq, hash);
+        rank = kh_val(wfreq, it).rank;
+    }
+    ++occ[rank];
     s = fwrite(&rank,sizeof(rank),1,newp);
     if(s!=1) die("Error writing to new parse file");
   }
   if(fclose(newp)!=0) die("Error closing new parse file");
   if(mfclose(moldp)!=0) die("Error closing old parse segment");
   // check old and recomputed occ coincide 
-  for(auto& x : wfreq)
-    assert(x.second.occ == occ[x.second.rank]);
+#if !NDEBUG
+  for(khiter_t ki = 0; ki < kh_size(wfreq); ++ki)
+    if(kh_exist(wfreq, ki))
+        assert(kh_val(wfreq, ki).rank == occ[kh_val(wfreq, ki).rank]);
+#endif
 }
  
 
@@ -484,7 +385,7 @@ int main(int argc, char** argv)
   time_t start_main = time(NULL);
   time_t start_wc = start_main;  
   // init sorted map counting the number of occurrences of each word
-  map<uint64_t,word_stats> wordFreq;  
+  khash_t(stats) *wordFreq = kh_init(stats);
   uint64_t totChar;
 
   // ------------ parsing input file 
@@ -505,7 +406,7 @@ int main(int argc, char** argv)
       die("bad alloc exception");
   }
   // first report 
-  uint64_t totDWord = wordFreq.size();
+  uint64_t totDWord = kh_size(wordFreq);
   cout << "Total input symbols: " << totChar << endl;
   cout << "Found " << totDWord << " distinct words" <<endl;
   cout << "Parsing took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";  
@@ -519,21 +420,21 @@ int main(int argc, char** argv)
   // -------------- second pass  
   start_wc = time(NULL);
   // create array of dictionary words
-  vector<const string *> dictArray;
+  vector<const char *> dictArray;
   dictArray.reserve(totDWord);
   // fill array
   uint64_t sumLen = 0;
   uint64_t totWord = 0;
-  for (auto& x: wordFreq) {
-    sumLen += x.second.str.size();
-    totWord += x.second.occ;
-    dictArray.push_back(&x.second.str);
+  for(khiter_t ki = 0; ki < kh_end(wordFreq); ++ki) {
+    sumLen += std::strlen(kh_val(wordFreq, ki).str);
+    totWord += kh_val(wordFreq, ki).occ;
+    dictArray.push_back(kh_val(wordFreq, ki).str);
   }
   assert(dictArray.size()==totDWord);
-  cout << "Sum of lenghts of dictionary words: " << sumLen << endl; 
+  cout << "Sum of lengths of dictionary words: " << sumLen << endl; 
   cout << "Total number of words: " << totWord << endl; 
   // sort dictionary
-  sort(dictArray.begin(), dictArray.end(),pstringCompare);
+  sort(dictArray.begin(), dictArray.end(),[](const char *x, const char *y) {return std::strcmp(x, y) < 0;});
   // write plain dictionary and occ file, also compute rank for each hash 
   cout << "Writing plain dictionary and occ file\n";
   writeDictOcc(arg, wordFreq, dictArray);
@@ -546,12 +447,9 @@ int main(int argc, char** argv)
   remapParse(arg, wordFreq);
   cout << "Remapping parse file took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";  
   cout << "==== Elapsed time: " << difftime(time(NULL),start_main) << " wall clock seconds\n";        
+  for(khiter_t ki = 0; ki < kh_end(wordFreq); ++ki)
+    if(kh_exist(wordFreq, ki))
+      std::free(kh_val(wordFreq, ki).str);
   return 0;
-}
-
-static void die(const string s)
-{
-  perror(s.c_str());
-  exit(1);
 }
 
