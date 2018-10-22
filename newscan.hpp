@@ -1,3 +1,5 @@
+#ifndef NEW_SCAN_H__
+#define NEW_SCAN_H__
 #include "klib/khash.h"
 #include <string>
 #include <mutex>
@@ -207,6 +209,7 @@ void *mt_parse(void *dx)
 
 // prefix free parse of file fnam. w is the window size, p is the modulus
 // use a KR-hash as the word ID that is written to the parse file
+#if !NOTHREADS
 uint64_t mt_process_file(Args& arg, khash_t(stats) *wf)
 {
   // get input file size
@@ -275,5 +278,6 @@ uint64_t mt_process_file(Args& arg, khash_t(stats) *wf)
   #endif
   return size;
 }
+#endif /* #if !NOTHREADS */
 
-
+#endif /* #ifndef NEW_SCAN_H__ */
