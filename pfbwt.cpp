@@ -350,7 +350,7 @@ int main(int argc, char** argv)
   fseek(g,0,SEEK_END);
   e = ftell(g);
   if(e<0) die("ftell occ file");
-  if(e%4!=0) die("invalid occ file");
+  if(e&3) die("invalid occ file");
   int dwords = e/4;
   cout  << "Dictionary words: " << dwords << endl;
   uint32_t *occ = new uint32_t[dwords+1];  // dwords+1 since istart overwrites occ
@@ -398,7 +398,7 @@ int main(int argc, char** argv)
   assert(occ[1]==occ[0]+1);
   
   // compute and write the final bwt 
-  if(arg.th==0)
+  if(arg.th<2)
     bwt(arg,d,dsize,ilist,bwlast,psize,occ,dwords); // version not using threads
   else {
     #ifdef NOTHREADS

@@ -2,6 +2,8 @@
  * pfthreads.hpp
  * 
  **************************************************************************** */
+#ifndef PFTHREADS_H__
+#define PFTHREADS_H__
 extern "C" {
 #include "xerrors.h"
 }
@@ -124,7 +126,7 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
     }
   }
   else { // multithread code 
-    pthread_t t[numt];
+    pthread_t *t = static_cast<pthread_t *>(std::malloc(sizeof(pthread_t) * numt));
     sa2da_data d;
     pc_init(&d.free_slots,&d.data_items, &d.cons_m);
     d.cindex = 0; d.full_words=0;
@@ -155,6 +157,7 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
     // wait for termination of threads
     for(int i=0;i<numt;i++)
       xpthread_join(t[i],NULL,__LINE__,__FILE__);
+    std::free(t);
     // done
     words = d.full_words;
     pc_destroy(&d.free_slots,&d.data_items, &d.cons_m);
@@ -443,7 +446,8 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
   td.bwsainfo = bwsainfo;
   td.psize = psize;
   // start consumer threads
-  pthread_t t[arg.th];
+  
+  pthread_t *t = static_cast<pthread_t *>(std::malloc(arg.th * sizeof(pthread_t)));
   for(int i=0;i<arg.th;i++)
     xpthread_create(&t[i],NULL,merge_body,&td,__LINE__,__FILE__);
 
@@ -500,6 +504,7 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
   }
   for(int i=0;i<arg.th;i++)
     xpthread_join(t[i],NULL,__LINE__,__FILE__);
+  std::free(t);
 
   assert(td.full_words==dwords);  
   cout << "Full words: " << td.full_words << endl;
@@ -572,4 +577,4 @@ static void pc_destroy(sem_t *free_slots, sem_t *data_items, pthread_mutex_t *m)
   xsem_destroy(data_items,__LINE__,__FILE__);
 }  
   
-  
+#endif /* #ifndef PFTHREADS_H__ */
