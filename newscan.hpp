@@ -237,7 +237,7 @@ uint64_t mt_process_file(Args& arg, khash_t(stats) *wf)
     td[i].last = open_aux_file_num(arg.inputFileName.c_str(),arg.lastExt.c_str(),i,"wb");
     // if requested open file containing the ending position+1 of each word
     td[i].sa = arg.SAinfo ?open_aux_file_num(arg.inputFileName.c_str(),arg.saExt.c_str(),i,"wb") : NULL;
-    xpthread_create(&t[i],NULL,&mt_parse,&td[i],__LINE__,__FILE__);
+    xpthread_create(&t[i],NULL,&mt_parse,&td[i]);
   }
 
 #if 0
@@ -254,7 +254,7 @@ uint64_t mt_process_file(Args& arg, khash_t(stats) *wf)
   // wait for the threads to finish (in order) and close output files
   long tot_char=0;
   for(int i=0;i<arg.th;i++) {
-    xpthread_join(t[i],NULL,__LINE__,__FILE__);
+    xpthread_join(t[i],NULL);
     if(arg.verbose) {
       cout << "s:" << td[i].start << "  e:" << td[i].end << "  pa:";
       cout << td[i].parsed << "  sk:" << td[i].skipped << "  wo:" << td[i].words << '\n';

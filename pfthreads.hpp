@@ -50,11 +50,11 @@ void *sa2da_body(void *v)
   long words=0;
   while(true) {
     // --- get starting position from buffer 
-    xsem_wait(&d->data_items,__LINE__,__FILE__);
-    xpthread_mutex_lock(&d->cons_m,__LINE__,__FILE__);
+    xsem_wait(&d->data_items);
+    xpthread_mutex_lock(&d->cons_m);
     sarange r = d->buffer[d->cindex++ % Buf_size]; 
-    xpthread_mutex_unlock(&d->cons_m,__LINE__,__FILE__);
-    xsem_post(&d->free_slots,__LINE__,__FILE__);
+    xpthread_mutex_unlock(&d->cons_m);
+    xsem_post(&d->free_slots);
     // exit if start is illegal
     if(r.start<0) break;
     // process range [start,end]
@@ -68,7 +68,7 @@ void *sa2da_body(void *v)
         assert(d->lcp[i]<suffixLen);    // full words are not prefix of other suffixes
       }
       if(d->lcp[i]==suffixLen) {         // save seqid + possibily extra bit 
-        d->sa[i] = seqid | (1u << 31);   // mark last bit if lcp==suffix_len;
+        d->sa[i] = seqid | (SEQID_HIGHER_BIT);   // mark last bit if lcp==suffix_len;
       }
       else 
         d->sa[i] = seqid;               // save only seqid = da[i]
@@ -76,9 +76,9 @@ void *sa2da_body(void *v)
     }    
   }
   // update total number of full_words
-  xpthread_mutex_lock(&d->cons_m,__LINE__,__FILE__);
+  xpthread_mutex_lock(&d->cons_m);
   d->full_words += words;
-  xpthread_mutex_unlock(&d->cons_m,__LINE__,__FILE__);
+  xpthread_mutex_unlock(&d->cons_m);
   return NULL;
 }
 
@@ -120,7 +120,7 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
         assert(lcp[i]<suffixLen);    // full words are not prefix of other suffixes
       }
       if(lcp[i]==suffixLen) {         // save seqid + possibily extra bit 
-        sa[i] = seqid | (1u << 31);  // mark last bit if lcp==suffix_len;
+        sa[i] = seqid | SEQID_HIGHER_BIT;  // mark last bit if lcp==suffix_len;
       }
       else 
         sa[i] = seqid;               // save only seqid = da[i]
@@ -128,7 +128,11 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
     }
   }
   else { // multithread code 
+#if AVOID_ALLOCA
     pthread_t *t = static_cast<pthread_t *>(std::malloc(sizeof(pthread_t) * numt));
+#else
+    pthread_t *t = static_cast<pthread_t *>(__builtin_alloca(sizeof(pthread_t) * numt));
+#endif
     sa2da_data d;
     pc_init(&d.free_slots,&d.data_items, &d.cons_m);
     d.cindex = 0; d.full_words=0;
@@ -136,7 +140,7 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
     d.lcp = lcp; d.wlen = wlen; d.dwords=dwords;
     // thread creation
     for(int i=0;i<numt;i++) 
-      xpthread_create(&t[i],NULL,sa2da_body,&d,__LINE__,__FILE__);
+      xpthread_create(&t[i],NULL,sa2da_body,&d);
     // producer code
     sarange r; int pindex = 0;
     for(long i=dwords+w+1; i<dsize; ) {
@@ -144,22 +148,24 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
       r.end = i+Sa_block;
       if(r.end>dsize) r.end = dsize;
       // write to the buffer
-      xsem_wait(&d.free_slots,__LINE__,__FILE__);
+      xsem_wait(&d.free_slots);
       d.buffer[(pindex++) % Buf_size] = r; 
-      xsem_post(&d.data_items,__LINE__,__FILE__);
+      xsem_post(&d.data_items);
       i = r.end;
     }
     // send terminate data
     r.start = -1;
     for(int i=0;i<numt;i++) {
-      xsem_wait(&d.free_slots,__LINE__,__FILE__);
+      xsem_wait(&d.free_slots);
       d.buffer[(pindex++) % Buf_size] = r; 
-      xsem_post(&d.data_items,__LINE__,__FILE__);
+      xsem_post(&d.data_items);
     }
     // wait for termination of threads
     for(int i=0;i<numt;i++)
-      xpthread_join(t[i],NULL,__LINE__,__FILE__);
+      xpthread_join(t[i],NULL);
+#if AVOID_ALLOCA
     std::free(t);
+#endif
     // done
     words = d.full_words;
     pc_destroy(&d.free_slots,&d.data_items, &d.cons_m);
@@ -307,11 +313,11 @@ static void *merge_body(void *v)
   // main loop 
   while(true) {
     // --- get starting position from buffer 
-    xsem_wait(&d->data_items,__LINE__,__FILE__);
-    xpthread_mutex_lock(&d->cons_m,__LINE__,__FILE__);
+    xsem_wait(&d->data_items);
+    xpthread_mutex_lock(&d->cons_m);
     da_range r = d->buffer[d->cindex++ % Buf_size]; 
-    xpthread_mutex_unlock(&d->cons_m,__LINE__,__FILE__);
-    xsem_post(&d->free_slots,__LINE__,__FILE__);
+    xpthread_mutex_unlock(&d->cons_m);
+    xsem_post(&d->free_slots);
     // exit if start is illegal
     if(r.start<0) break;
     // process range [start,end]
@@ -382,11 +388,11 @@ static void *merge_body(void *v)
   }
   if(local_bwt!=NULL) free(local_bwt);
   if(local_sa!=NULL) free(local_sa);
-  xpthread_mutex_lock(&d->cons_m,__LINE__,__FILE__);
+  xpthread_mutex_lock(&d->cons_m);
   d->easy_bwts += easy_bwts;  
   d->hard_bwts += hard_bwts;  
   d->full_words += full_words;  
-  xpthread_mutex_unlock(&d->cons_m,__LINE__,__FILE__);
+  xpthread_mutex_unlock(&d->cons_m);
   return NULL;
 }
 
@@ -448,10 +454,14 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
   td.bwsainfo = bwsainfo;
   td.psize = psize;
   // start consumer threads
-  
+
+#if AVOID_ALLOCA
   pthread_t *t = static_cast<pthread_t *>(std::malloc(arg.th * sizeof(pthread_t)));
+#else
+  pthread_t *t = static_cast<pthread_t *>(__builtin_alloca(arg.th * sizeof(pthread_t)));
+#endif
   for(int i=0;i<arg.th;i++)
-    xpthread_create(&t[i],NULL,merge_body,&td,__LINE__,__FILE__);
+    xpthread_create(&t[i],NULL,merge_body,&td);
 
   // main loop: consider each entry in the DA[] of dict
   //uint8_t *bwt = get_mmaped_bwt(name);
@@ -464,9 +474,9 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
     if(entries >= Min_bwt_range) {
       r.start = r.end; r.end = i;
       r.bwt_start = written; r.count = entries;
-      xsem_wait(&td.free_slots,__LINE__,__FILE__);
+      xsem_wait(&td.free_slots);
       td.buffer[pindex++ % Buf_size] = r;
-      xsem_post(&td.data_items,__LINE__,__FILE__);
+      xsem_post(&td.data_items);
       written += entries; entries=0;
     }
     next = i+1;  // prepare for next iteration  
@@ -494,19 +504,21 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
   // write last range to pc buffer
   r.start = r.end; r.end = dasize;
   r.bwt_start = written; r.count = entries;
-  xsem_wait(&td.free_slots,__LINE__,__FILE__);
+  xsem_wait(&td.free_slots);
   td.buffer[pindex++ % Buf_size] = r;
-  xsem_post(&td.data_items,__LINE__,__FILE__);
+  xsem_post(&td.data_items);
   // terminate and join threads 
   r.start = -1; 
   for(int i=0;i<arg.th;i++) {
-    xsem_wait(&td.free_slots,__LINE__,__FILE__);
+    xsem_wait(&td.free_slots);
     td.buffer[pindex++ % Buf_size] = r;
-    xsem_post(&td.data_items,__LINE__,__FILE__);
+    xsem_post(&td.data_items);
   }
   for(int i=0;i<arg.th;i++)
-    xpthread_join(t[i],NULL,__LINE__,__FILE__);
+    xpthread_join(t[i],NULL);
+#if AVOID_ALLOCA
   std::free(t);
+#endif
 
   assert(td.full_words==dwords);  
   cout << "Full words: " << td.full_words << endl;
@@ -567,16 +579,16 @@ static int get_sa_fd(char *name)
 // initialize/destroy semaphores and mutex for producer/consumer 
 static void pc_init(sem_t *free_slots, sem_t *data_items, pthread_mutex_t *m)
 {
-  xpthread_mutex_init(m,NULL,__LINE__,__FILE__);
-  xsem_init(free_slots,0,Buf_size,__LINE__,__FILE__);
-  xsem_init(data_items,0,0,__LINE__,__FILE__);
+  xpthread_mutex_init(m,NULL);
+  xsem_init(free_slots,0,Buf_size);
+  xsem_init(data_items,0,0);
 }  
   
 static void pc_destroy(sem_t *free_slots, sem_t *data_items, pthread_mutex_t *m)
 {
-  xpthread_mutex_destroy(m,__LINE__,__FILE__);
-  xsem_destroy(free_slots,__LINE__,__FILE__);
-  xsem_destroy(data_items,__LINE__,__FILE__);
+  xpthread_mutex_destroy(m);
+  xsem_destroy(free_slots);
+  xsem_destroy(data_items);
 }  
   
 #endif /* #ifndef PFTHREADS_H__ */
