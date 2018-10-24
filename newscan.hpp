@@ -73,12 +73,14 @@ struct mt_data {
 };
 
 template<typename T, typename T2>
-T modexp(T b, T e, T2 m) {
-    if(e == 0) return 1;
-    T t = modexp(b, e>>1, m);
-    t *= t, t %= m;
-    if(e&1) t *=b, t %= m;
-    return t;
+const T modexp(T base, T exp, T2 mod) {
+	T2 result = 1;
+	while (exp) {
+		if (exp & 1) result = (result * base) % mod;
+		exp >>= 1;
+		base *= base;
+	}
+	return result;
 }
 static void die(const string s) {
   perror(s.c_str());

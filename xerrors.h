@@ -2,8 +2,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <stdbool.h>  
-#include <assert.h>   
+#include <stdbool.h>
+#include <assert.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -26,7 +26,7 @@ int _xpthread_create(pthread_t *thread, const pthread_attr_t *attr,
                           void *(*start_routine) (void *), void *arg, int linea, const char *file);
 int _xpthread_join(pthread_t thread, void **retval, int linea, const char *file);
 
-// mutex 
+// mutex
 int _xpthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr, int linea, const char *file);
 int _xpthread_mutex_destroy(pthread_mutex_t *mutex, int linea, const char *file);
 int _xpthread_mutex_lock(pthread_mutex_t *mutex, int linea, const char *file);
@@ -50,7 +50,7 @@ static inline int _xsem_wait(sem_t *sem, int linea, const char *file) {
     if(__builtin_expect(e, 0)) {
         xperror(e, "Error in sem_wait");
         fprintf(stderr,"== %d == Line: %d, File: %s\n",getpid(),linea,file);
-        sleep(Thread_error_wait);  // do not kill immediately other threads 
+        sleep(Thread_error_wait);  // do not kill immediately other threads
         exit(1);
     }
     return e;

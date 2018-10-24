@@ -9,14 +9,14 @@
 #include <stdbool.h>
 #include <time.h>
 #include <sys/mman.h>
-#include "utils.h" 
+#include "utils.h"
 
 // -------------------------------------------------------------
 // struct containing command line parameters and other globals
 typedef struct {
    char *basename;
    char *outname;
-   int w;     // window size  
+   int w;     // window size
 } Args;
 
 
@@ -33,7 +33,7 @@ static void print_help(char *name)
 
 static void parseArgs(int argc, char** argv, Args *arg ) {
   extern int optind, opterr, optopt;
-  extern char *optarg;  
+  extern char *optarg;
   int c;
 
   puts("==== Command line:");
@@ -56,8 +56,8 @@ static void parseArgs(int argc, char** argv, Args *arg ) {
       exit(1);
     }
   }
-  // read base name as the only non-option parameter   
-  if (argc!=optind+1) 
+  // read base name as the only non-option parameter
+  if (argc!=optind+1)
     print_help(argv[0]);
   arg->basename = strdup(argv[optind]);
   // if not given create output file name with .out extension
@@ -80,15 +80,15 @@ void *mmap_fd(int fd, size_t *n)
 int main(int argc, char *argv[])
 {
   Args arg;        // command line arguments
-  char *Dict;      // dictionary 
+  char *Dict;      // dictionary
   size_t n;        // length of dictionary
-  uint32_t *Wstart; // starting positions of words inside dictionary 
-  
-  // read arguments 
+  uint32_t *Wstart; // starting positions of words inside dictionary
+
+  // read arguments
   parseArgs(argc,argv,&arg);
-  // start measuring wall clock time 
+  // start measuring wall clock time
   time_t start_wc = time(NULL);
-  
+
   // mmap dictionary file to memory
   int dict_fd = fd_open_aux_file(arg.basename,EXTDICT,O_RDONLY);
   Dict = mmap_fd(dict_fd,&n);
@@ -109,10 +109,10 @@ int main(int argc, char *argv[])
         Wstart = realloc(Wstart,size*sizeof(*Wstart));
         if(Wstart==NULL) die("Allocation error");
       }
-      Wstart[words] = i+1; // starting position of next word 
+      Wstart[words] = i+1; // starting position of next word
     }
-    else if(Dict[i]==Dollar) 
-      Dict[i]=0; // replace Dollars with 0s (they appear only at th end of the text) 
+    else if(Dict[i]==Dollar)
+      Dict[i]=0; // replace Dollars with 0s (they appear only at th end of the text)
   }
   assert(Dict[Wstart[words]]==0); // last word is dummy
   fprintf(stderr,"Found %ld dictionary words\n",words);
@@ -131,15 +131,15 @@ int main(int argc, char *argv[])
     if(w==1) s = Dict+1; // first word in the parsing except from the Dollar
     else s = Dict + Wstart[w-1] + arg.w;
     e = fputs(s,f);
-    if(e==EOF) die("Error writing to the output file"); 
+    if(e==EOF) die("Error writing to the output file");
   }
   fclose(parse);
   fclose(f);
   free(Wstart);
   munmap(Dict,n);
   free(arg.outname);
-  free(arg.basename);  
-  printf("==== Elapsed time: %.0lf wall clock seconds\n", difftime(time(NULL),start_wc));  
+  free(arg.basename);
+  printf("==== Elapsed time: %.0lf wall clock seconds\n", difftime(time(NULL),start_wc));
   return 0;
 }
 

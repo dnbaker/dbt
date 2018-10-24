@@ -105,7 +105,7 @@ static uint32_t *read_parse(char *basename, long *tsize)
 
   // read the array in one shot
   assert(sizeof(*Text)==4);
-  size_t s = fread(Text,sizeof(*Text),n,parse);
+  auto s = fread(Text,sizeof(*Text),n,parse);
   if(s!=n) {
     char *msg=NULL;
     int e= asprintf(&msg,"read parse error: %zu vs %ld\n", s,n);
@@ -153,7 +153,7 @@ static void parseArgs(int argc, char** argv, Args *arg ) {
       exit(1);
     }
   }
-  // read base name as the only non-option parameter 
+  // read base name as the only non-option parameter
   if (argc!=optind+1)
     print_help(argv[0]);
   arg->basename = argv[optind];
@@ -218,7 +218,7 @@ int main(int argc, char *argv[])
 
   // read arguments
   parseArgs(argc,argv,&arg);
-  // start measuring wall clock time 
+  // start measuring wall clock time
   time_t start_wc = time(NULL);
   // read parse file
   Text = read_parse(arg.basename,&n);
@@ -300,7 +300,7 @@ int main(int argc, char *argv[])
 #if _64BIT_BWT
   uint64_t
 #else
-  uint32_t 
+  uint32_t
 #endif
            *F = malloc((k+1)*sizeof(*F));
   if(F==NULL) die("malloc failed (F)");
