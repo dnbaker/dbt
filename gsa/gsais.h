@@ -33,7 +33,9 @@
 #include <string.h>
 #include <time.h>
 
-#define max(a,b) ((a) > (b) ? (a) : (b))
+#ifndef GSA_MAX
+#define GSA_MAX(a,b) ((a) > (b) ? (a) : (b))
+#endif
 
 #ifndef DEBUG
 	#define DEBUG 0

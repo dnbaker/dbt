@@ -4,6 +4,11 @@
  **************************************************************************** */
 #ifndef PFTHREADS_H__
 #define PFTHREADS_H__
+#include <fstream>
+#include <algorithm>
+#include <random>
+#include <vector>
+#include <map>
 extern "C" {
 #include "xerrors.h"
 }
@@ -23,6 +28,16 @@ extern "C" {
 #endif
 
 //static size_t get_bwt_size(char *name);
+static long get_num_words(uint8_t *d, long n);
+static long binsearch(uint_t x, uint_t a[], long n);
+static int_t getlen(uint_t p, uint_t eos[], long n, uint_t *seqid);
+static void compute_dict_bwt_lcp(uint8_t *d, long dsize,long dwords, int w, uint_t **sap, int_t **lcpp);
+static void fwrite_chars_same_suffix(vector<uint32_t> &id2merge,  vector<uint8_t> &char2write, uint32_t *ilist, uint32_t *istart, FILE *fbwt, long &easy_bwts, long &hard_bwts);
+static void fwrite_chars_same_suffix_sa(vector<uint32_t> &id2merge,  vector<uint8_t> &char2write, uint32_t *ilist, uint32_t *istart, FILE *fbwt, long &easy_bwts, long &hard_bwts,
+                                     int_t suffixLen, FILE *safile, uint8_t *bwsainfo,long);
+static void fwrite_chars_same_suffix_ssa(vector<uint32_t> &id2merge,  vector<uint8_t> &char2write, uint32_t *ilist, uint32_t *istart, FILE *fbwt, long &easy_bwts, long &hard_bwts,
+                                     int_t suffixLen, FILE *ssafile, FILE *esafile, uint8_t *bwsainfo,long, int &, uint64_t &, int);
+static uint8_t *load_bwsa_info(Args &arg, long n);
 static int get_bwt_fd(char *name);
 static int get_sa_fd(char *name);
 static void fd_write(int fd, uint8_t *b,long towrite,long start);
@@ -55,7 +70,7 @@ void *sa2da_body(void *v)
   sa2da_data *d = (sa2da_data *) v;
   uint_t seqid;
   long words=0;
-  while(true) {
+  FOREVER {
     // --- get starting position from buffer
     xsem_wait(&d->data_items);
     xpthread_mutex_lock(&d->cons_m);
@@ -70,15 +85,17 @@ void *sa2da_body(void *v)
       assert(seqid<=SEQID_MASK);     // seqid uses at most 31 bits
       assert(suffixLen>=d->lcp[i]);     // suffix length cannot be shorter than lcp
       assert(suffixLen<=d->wlen[seqid]);// suffix length cannot be larger than word length
+#if OLD_WAY
       if(suffixLen==d->wlen[seqid]) {   // test if full word
         words++;
         assert(d->lcp[i]<suffixLen);    // full words are not prefix of other suffixes
       }
-      if(d->lcp[i]==suffixLen) {         // save seqid + possibily extra bit
-        d->sa[i] = seqid | (SEQID_HIGHER_BIT);   // mark last bit if lcp==suffix_len;
-      }
-      else
-        d->sa[i] = seqid;               // save only seqid = da[i]
+#else
+      words += suffixLen==d->wlen[seqid];
+#endif
+      d->sa[i] = d->lcp[i]==suffixLen ? seqid | (SEQID_HIGHER_BIT): seqid;
+      // save seqid + possibily extra bit
+      // mark last bit if lcp==suffix_len;
       d->lcp[i] = suffixLen;            // save suffix length overwriting lcp
     }
   }
@@ -135,10 +152,10 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
     }
   }
   else { // multithread code
-#if AVOID_ALLOCA
-    pthread_t *t = static_cast<pthread_t *>(std::malloc(sizeof(pthread_t) * numt));
-#else
+#if (__GNUC__ || __clang__) && !defined(AVOID_ALLOCA)
     pthread_t *t = static_cast<pthread_t *>(__builtin_alloca(sizeof(pthread_t) * numt));
+#else
+    pthread_t *t = static_cast<pthread_t *>(std::malloc(sizeof(pthread_t) * numt));
 #endif
     sa2da_data d;
     pc_init(&d.free_slots,&d.data_items, &d.cons_m);
@@ -168,9 +185,8 @@ void sa2da(uint_t sa[], int_t lcp[], uint8_t d[], long dsize, long dwords, int w
       xsem_post(&d.data_items);
     }
     // wait for termination of threads
-    for(int i=0;i<numt;i++)
-      xpthread_join(t[i],NULL);
-#if AVOID_ALLOCA
+    for(int i=0;i<numt;xpthread_join(t[i++],NULL));
+#if (__GNUC__ || __clang__) && !defined(AVOID_ALLOCA)
     std::free(t);
 #endif
     // done
@@ -489,7 +505,7 @@ void bwt_multi(Args &arg, uint8_t *d, long dsize, // dictionary and its size
     next = i+1;  // prepare for next iteration
     // discard if it is a small suffix
     if(suflen[i]<=arg.w) continue;
-    uint32_t seqid = da[i]&SEQID_MASK;
+    uint_t seqid = da[i]&SEQID_MASK;
     assert(seqid<dwords);
     entries += istart[seqid+1]-istart[seqid];
     // ----- simple case: the suffix is a full word

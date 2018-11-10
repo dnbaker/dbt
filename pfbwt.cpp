@@ -23,15 +23,11 @@
 #include <semaphore.h>
 #include <ctime>
 #include <string>
-#include <fstream>
-#include <algorithm>
-#include <random>
-#include <vector>
-#include <map>
 extern "C" {
 #include "gsa/gsacak.h"
 #include "utils.h"
 }
+#include "pfthreads.hpp"
 
 using namespace std;
 using namespace __gnu_cxx;
@@ -56,16 +52,6 @@ struct Args {
 #define END_RUN 2
 
 
-static long get_num_words(uint8_t *d, long n);
-static long binsearch(uint_t x, uint_t a[], long n);
-static int_t getlen(uint_t p, uint_t eos[], long n, uint_t *seqid);
-static void compute_dict_bwt_lcp(uint8_t *d, long dsize,long dwords, int w, uint_t **sap, int_t **lcpp);
-static void fwrite_chars_same_suffix(vector<uint32_t> &id2merge,  vector<uint8_t> &char2write, uint32_t *ilist, uint32_t *istart, FILE *fbwt, long &easy_bwts, long &hard_bwts);
-static void fwrite_chars_same_suffix_sa(vector<uint32_t> &id2merge,  vector<uint8_t> &char2write, uint32_t *ilist, uint32_t *istart, FILE *fbwt, long &easy_bwts, long &hard_bwts,
-                                     int_t suffixLen, FILE *safile, uint8_t *bwsainfo,long);
-static void fwrite_chars_same_suffix_ssa(vector<uint32_t> &id2merge,  vector<uint8_t> &char2write, uint32_t *ilist, uint32_t *istart, FILE *fbwt, long &easy_bwts, long &hard_bwts,
-                                     int_t suffixLen, FILE *ssafile, FILE *esafile, uint8_t *bwsainfo,long, int &, uint64_t &, int);
-static uint8_t *load_bwsa_info(Args &arg, long n);
 
 // class representing the suffix of a dictionary word
 // instances of this class are stored to a heap to handle the hard bwts
@@ -115,8 +101,8 @@ void bwt(Args &arg, uint8_t *d, long dsize, // dictionary and its size
   FILE *safile=NULL, *ssafile=NULL, *esafile=NULL;
   // open the necessary (sampled) SA files (possibly none)
   if(arg.SA) safile = open_aux_file(arg.basename,EXTSA,"wb");
-  if(arg.sampledSA & START_RUN) ssafile = open_aux_file(arg.basename,EXTSSA,"wb");
-  if(arg.sampledSA & END_RUN) esafile = open_aux_file(arg.basename,EXTESA,"wb");
+  if(arg.sampledSA & START_RUN) if((ssafile = open_aux_file(arg.basename,EXTSSA,"wb")) == nullptr) throw std::runtime_error(std::string("Could not open ssa file for writing at ") + arg.basename + '.' +  EXTSSA);
+  if(arg.sampledSA & END_RUN) if((esafile = open_aux_file(arg.basename,EXTESA,"wb")) == nullptr) throw std::runtime_error(std::string("Could not open ssa file for writing at ") + arg.basename + '.' + EXTESA);
 
   // compute sa and bwt of d and do some checking on them
   uint_t *sa; int_t *lcp;

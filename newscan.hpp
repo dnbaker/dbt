@@ -92,7 +92,7 @@ static void save_update_word(string& w, unsigned int minsize, khash_t(stats) *fr
 struct KR_window {
   int wsize;
   int asize;
-  int *window;
+  uint8_t *window;
   static constexpr uint64_t prime = 1999999973;
   uint64_t hash;
   uint64_t tot_char;
@@ -118,8 +118,8 @@ struct KR_window {
     int k = tot_char++ % wsize;
     // complex expression to avoid negative numbers 
     hash += (prime - (window[k]*asize_pot) % prime); // remove window[k] contribution  
+    window[k] = c;
     hash = (asize*hash + c) % prime;      //  add char i 
-    window[k]=c;
     // cerr << get_window() << " ~~ " << window << " --> " << hash << endl;
     return hash; 
   }

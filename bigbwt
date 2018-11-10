@@ -81,12 +81,12 @@ def main():
     # ----------- computation of the BWT of the parsing
     start = time.time()
     parse_size = os.path.getsize(args.input+".parse")/4
-    if(parse_size >=  (2**32-1) ):
+    if(parse_size >= (2**32 - 1) ):
       print("Sorry, the parse contains %d words" %  parse_size )
       print("which is more than my current limit 2^32-2")
       print("Please re-run the program with a larger modulus (currently %d)" % args.mod)
       sys.exit(1)
-    elif(parse_size >=  (2**31-1) ):
+    elif(parse_size >  (2**31 - 1) ):
       command = "{exe} {file}".format(exe=parsebwt_exe64, file=args.input)
     else:
       command = "{exe} {file}".format(exe=parsebwt_exe, file=args.input)

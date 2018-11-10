@@ -16,6 +16,10 @@
 #define Thread_error_wait 5
 #endif
 
+#ifndef FOREVER
+#define FOREVER for(;;)
+#endif
+
 
 // thread
 void xperror(int en, const char *msg);

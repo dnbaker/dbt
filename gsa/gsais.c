@@ -64,13 +64,13 @@ void compute_lcp_phi_sparse_sais(int_t *s, int_t *SA1,
   for(i=0; i<n1-1;i++){
     if(chr(RA[i])==separator) continue;
 
-    l = max(PLCP[i], l);//consider the LCP-value of the lms-substrings
+    l = GSA_MAX(PLCP[i], l);//consider the LCP-value of the lms-substrings
 
     while(chr(RA[i]+l)==chr(RA[LCP[i]]+l) && !(chr(RA[i]+l) == separator && chr(RA[LCP[i]]+l)==separator) ) ++l;
     PLCP[i]=l;
 
     if(LCP[i]==n1-1) l -= RA[i+1]-RA[i];
-    else l -= max(RA[i+1]-RA[i], RA[LCP[i]+1]-RA[LCP[i]]);//LCP[i] stores the distance of i-th suffix to its successor
+    else l -= GSA_MAX(RA[i+1]-RA[i], RA[LCP[i]+1]-RA[LCP[i]]);//LCP[i] stores the distance of i-th suffix to its successor
   }
 
   LCP[0]=0;
@@ -179,7 +179,7 @@ void induceSAl_generalized_LCP(unsigned char *t, int_t *SA, int_t *LCP, uint_t *
       }
       #if RMQ == 1
         uint_t k;
-        for(k=0; k<K; k++) if(M[k]>LCP[i]) M[k] = max(0,LCP[i]);
+        for(k=0; k<K; k++) if(M[k]>LCP[i]) M[k] = GSA_MAX(0,LCP[i]);
       #elif RMQ == 2
         int_t min_lcp=0;
         uint_t last;
@@ -190,7 +190,7 @@ void induceSAl_generalized_LCP(unsigned char *t, int_t *SA, int_t *LCP, uint_t *
           last_occ[chr(SA[i]-1)] = i+1;
         }
  
-        int_t lcp=max(0,LCP[i]);
+        int_t lcp=GSA_MAX(0,LCP[i]);
         while(STACK[(top)-1].lcp>=lcp) (top)--;	
 
         stack_push_sais(STACK, &top, i+1, lcp);
@@ -327,7 +327,7 @@ void induceSAs_generalized_LCP(unsigned char *t, int_t *SA, int_t *LCP, uint_t *
       for(k=0; k<K; k++) if(M[k]>LCP[i]) M[k] = LCP[i];
     #elif RMQ == 2
 
-      int_t lcp=max(0,LCP[i]);
+      int_t lcp=GSA_MAX(0,LCP[i]);
 
       while(STACK[(top)-1].lcp>=lcp) (top)--;
       stack_push_sais(STACK, &top, i, lcp);
@@ -447,7 +447,7 @@ void induceSAl_generalized_LCP_DA(unsigned char *t, int_t *SA, int_t *LCP, int_t
       }
       #if RMQ == 1
         uint_t k;
-        for(k=0; k<K; k++) if(M[k]>LCP[i]) M[k] = max(0,LCP[i]);
+        for(k=0; k<K; k++) if(M[k]>LCP[i]) M[k] = GSA_MAX(0,LCP[i]);
       #elif RMQ == 2
         int_t min_lcp=0;
         uint_t last;
@@ -458,7 +458,7 @@ void induceSAl_generalized_LCP_DA(unsigned char *t, int_t *SA, int_t *LCP, int_t
           last_occ[chr(SA[i]-1)] = i+1;
         }
  
-        int_t lcp=max(0,LCP[i]);
+        int_t lcp=GSA_MAX(0,LCP[i]);
         while(STACK[(top)-1].lcp>=lcp) (top)--;	
 
         stack_push_sais(STACK, &top, i+1, lcp);
@@ -597,7 +597,7 @@ void induceSAs_generalized_LCP_DA(unsigned char *t, int_t *SA, int_t *LCP, int_t
       for(k=0; k<K; k++) if(M[k]>LCP[i]) M[k] = LCP[i];
     #elif RMQ == 2
 
-      int_t lcp=max(0,LCP[i]);
+      int_t lcp=GSA_MAX(0,LCP[i]);
 
       while(STACK[(top)-1].lcp>=lcp) (top)--;
       stack_push_sais(STACK, &top, i, lcp);

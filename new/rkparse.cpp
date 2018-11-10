@@ -77,59 +77,26 @@
  * pfbwt algorithm.
  *
  */
-#include "newscan.hpp"
+#include "rkparse.h"
 #include <cstring>
 
-using namespace std;
-using namespace __gnu_cxx;
-
-
-
-
-// -----------------------------------------------------------
-
-
-
-// compute 64-bit KR hash of a string
-// to avoid overflows in 64 bit aritmethic the prime is taken < 2**55
-uint64_t kr_hash(string s) {
-    uint64_t hash = 0;
-    //const uint64_t prime = 3355443229;     // next prime(2**31+2**30+2**27)
-    static constexpr uint64_t prime = 27162335252586509; // next prime (2**54 + 2**53 + 2**47 + 2**13)
-    for(size_t k=0;k<s.size();k++) {
-      int c = (unsigned char) s[k];
-      assert(c>=0 && c< 256);
-      hash = (256*hash + c) % prime;    //  add char k
-    }
-    return hash;
-}
-uint64_t kr_hash(const char *s) {
-    static constexpr uint64_t prime = 27162335252586509; // next prime (2**54 + 2**53 + 2**47 + 2**13)
-    uint64_t hash = (unsigned char) *s++;
-    while(*s) {
-        int c = (unsigned char) *s++;
-        hash <<= 8;
-        hash |= c;
-        hash %= prime;
-    }
-    return hash;
-}
-
+namespace bwt {
 
 
 // save current word in the freq map and update it leaving only the
 // last minsize chars which is the overlap with next word
-static void save_update_word(string& w, unsigned int minsize, khash_t(stats) *freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos)
+static void save_update_word(string& w, unsigned int minsize, khash_t(stats) *freq, std::FILE *tmp_parse_file, std::FILE *last, std::FILE *sa, uint64_t &pos)
 {
   assert(pos==0 || w.size() > minsize);
   if(w.size() <= minsize) return;
+  uint64_t hash;
+  khiter_t ki;
   // get the hash value and write it to the temporary parse file
-  uint64_t hash = kr_hash(w);
+  hash = kr_hash(w);
   if(std::fwrite(&hash,sizeof(hash),1,tmp_parse_file)!=1) die("parse write error");
 
   // update frequency table for current hash
-  khiter_t ki = kh_get(stats, freq, hash);
-  if(ki == kh_end(freq)) {
+  if((ki = kh_get(stats, freq, hash)) == kh_end(freq)) {
       int khr;
 #ifndef NOTHREADS
       std::lock_guard<std::mutex> lock(map_mutex);
@@ -139,6 +106,7 @@ static void save_update_word(string& w, unsigned int minsize, khash_t(stats) *fr
       kh_val(freq, ki).rank = 0;
       kh_val(freq, ki).str = static_cast<char *>(std::malloc(w.size() + 1));
       std::memcpy(kh_val(freq, ki).str, w.data(), w.size() + 1);
+      assert(kh_val(freq, ki).str[w.size()] == '\0');
   }
   else {
 #ifndef NOTHREADS
@@ -150,12 +118,12 @@ static void save_update_word(string& w, unsigned int minsize, khash_t(stats) *fr
       }
   }
   // output char w+1 from the end
-  if(fputc(w[w.size()- minsize-1],last)==EOF) die("Error writing to .last file");
+  if(std::fputc(w[w.size()- minsize-1],last)==EOF) die("Error writing to .last file");
   // compute ending position +1 of current word and write it to sa file
   // pos is the ending position+1 of the previous word and is updated here
   if(pos==0) pos = w.size()-1; // -1 is for the initial $ of the first word
   else pos += w.size() -minsize;
-  if(sa) if(std::fwrite(&pos,IBYTES,1,sa)!=1) die("Error writing to sa info file");
+  if(sa && std::fwrite(&pos,IBYTES,1,sa)!=1) die("Error writing to sa info file");
   // keep only the overlapping part of the window
   w.erase(0,w.size() - minsize);
 }
@@ -179,11 +147,11 @@ uint64_t process_file(Args& arg, khash_t(stats) *wordFreq)
   }
 
   // open the 1st pass parsing file
-  FILE *g = open_aux_file(arg.inputFileName.c_str(),arg.parse0ext.c_str(),"wb");
+  std::FILE *g = open_aux_file(arg.inputFileName.c_str(),arg.parse0ext.c_str(),"wb");
   // open output file containing the char at position -(w+1) of each word
-  FILE *last_file = open_aux_file(arg.inputFileName.c_str(),arg.lastExt.c_str(),"wb");
+  std::FILE *last_file = open_aux_file(arg.inputFileName.c_str(),arg.lastExt.c_str(),"wb");
   // if requested open file containing the ending position+1 of each word
-  FILE *sa_file = NULL;
+  std::FILE *sa_file = NULL;
   if(arg.SAinfo)
     sa_file = open_aux_file(arg.inputFileName.c_str(),arg.saExt.c_str(),"wb");
 
@@ -210,9 +178,9 @@ uint64_t process_file(Args& arg, khash_t(stats) *wordFreq)
   word.append(arg.w,Dollar);
   save_update_word(word,arg.w,wordFreq,g,last_file,sa_file,pos);
   // close input and output files
-  if(sa_file) if(std::fclose(sa_file)!=0) die("Error closing SA file");
-  if(std::fclose(last_file)!=0) die("Error closing last file");
-  if(std::fclose(g)!=0) die("Error closing parse file");
+  if(sa_file) if(fclose(sa_file)!=0) die("Error closing SA file");
+  if(fclose(last_file)!=0) die("Error closing last file");
+  if(fclose(g)!=0) die("Error closing parse file");
   if(pos!=krw.tot_char+arg.w) cerr << "Pos: " << pos << " tot " << krw.tot_char << endl;
   f.close();
   return krw.tot_char;
@@ -226,15 +194,15 @@ bool pstringCompare(const string *a, const string *b)
 
 // given the sorted dictionary and the frequency map write the dictionary and occ files
 // also compute the 1-based rank for each hash
-void writeDictOcc(Args &arg, khash_t(stats) *wfreq, vector<const char *> &sortedDict)
+void writeDictOcc(Args &arg, khash_t(stats) *wfreq, std::vector<const char *> &sortedDict)
 {
   assert(sortedDict.size() == kh_size(wfreq));
   // open dictionary and occ files
   string fdictname = arg.inputFileName + "." + arg.dictExt;
-  FILE *fdict = fopen(fdictname.c_str(),"wb");
+  std::FILE *fdict = fopen(fdictname.c_str(),"wb");
   if(fdict==NULL) die("Cannot open " + fdictname);
   string foccname = arg.inputFileName + "." + arg.occExt;
-  FILE *focc = fopen(foccname.c_str(),"wb");
+  std::FILE *focc = fopen(foccname.c_str(),"wb");
   if(focc==NULL) die("Cannot open " + foccname);
 
   word_int_t wrank = 1; // current word rank (1 based)
@@ -242,7 +210,7 @@ void writeDictOcc(Args &arg, khash_t(stats) *wfreq, vector<const char *> &sorted
     size_t sl = std::strlen(x);
     size_t s = std::fwrite(x, 1, sl, fdict);
     if(s!=sl) die("Error writing to " + fdictname);
-    if(fputc(EndOfWord,fdict)==EOF) die("Error writing EndOfWord to " + fdictname);
+    if(std::fputc(EndOfWord,fdict)==EOF) die("Error writing EndOfWord to " + fdictname);
     uint64_t hash = kr_hash(x);
     khiter_t ki = kh_get(stats, wfreq, hash);
     if(ki == kh_end(wfreq)) throw 1; // TODO: better error message
@@ -253,19 +221,19 @@ void writeDictOcc(Args &arg, khash_t(stats) *wfreq, vector<const char *> &sorted
     assert(wf.rank==0);
     wf.rank = wrank++;
   }
-  if(fputc(EndOfDict,fdict)==EOF) die("Error writing EndOfDict to " + fdictname);
-  if(std::fclose(focc)!=0) die("Error closing " + foccname);
-  if(std::fclose(fdict)!=0) die("Error closing" + fdictname);
+  if(std::fputc(EndOfDict,fdict)==EOF) die("Error writing EndOfDict to " + fdictname);
+  if(fclose(focc)!=0) die("Error closing " + foccname);
+  if(fclose(fdict)!=0) die("Error closing" + fdictname);
 }
 
 void remapParse(Args &arg, khash_t(stats) *wfreq)
 {
   // open parse files. the old parse can be stored in a single file or in multiple files
   mFile *moldp = mopen_aux_file(arg.inputFileName.c_str(), arg.parse0ext.c_str(), arg.th);
-  FILE *newp = open_aux_file(arg.inputFileName.c_str(), arg.parseExt.c_str(), "wb");
+  std::FILE *newp = open_aux_file(arg.inputFileName.c_str(), arg.parseExt.c_str(), "wb");
 
   // recompute occ as an extra check
-  vector<occ_int_t> occ(kh_size(wfreq)+1,0); // ranks are zero based
+  std::vector<occ_int_t> occ(kh_size(wfreq)+1,0); // ranks are zero based
   uint64_t hash;
   while(true) {
     size_t s = mfread(&hash,sizeof(hash),1,moldp);
@@ -280,7 +248,7 @@ void remapParse(Args &arg, khash_t(stats) *wfreq)
     s = std::fwrite(&rank,sizeof(rank),1,newp);
     if(s!=1) die("Error writing to new parse file");
   }
-  if(std::fclose(newp)!=0) die("Error closing new parse file");
+  if(fclose(newp)!=0) die("Error closing new parse file");
   if(mfclose(moldp)!=0) die("Error closing old parse segment");
   // check old and recomputed occ coincide
 #if !NDEBUG
@@ -294,8 +262,8 @@ void remapParse(Args &arg, khash_t(stats) *wfreq)
 
 
 void print_help(char** argv, Args &args) {
-  cout << "Usage: " << argv[ 0 ] << " <input filename> [options]" << endl;
-  cout << "  Options: " << endl
+  std::cout << "Usage: " << argv[ 0 ] << " <input filename> [options]" << endl;
+  std::cout << "  Options: " << endl
         << "\t-w W\tsliding window size, def. " << args.w << endl
         << "\t-p M\tmodulo for defining phrases, def. " << args.p << endl
         #ifndef NOTHREADS
@@ -304,7 +272,7 @@ void print_help(char** argv, Args &args) {
         << "\t-h  \tshow help and exit" << endl
         << "\t-s  \tcompute suffix array info" << endl;
   #ifdef GZSTREAM
-  cout << "If the input file is gzipped it is automatically extracted\n";
+  std::cout << "If the input file is gzipped it is automatically extracted\n";
   #endif
   exit(1);
 }
@@ -338,7 +306,7 @@ void parseArgs( int argc, char** argv, Args& arg ) {
         case 'h':
            print_help(argv, arg); exit(1);
         case '?':
-        cout << "Unknown option. Use -h for help." << endl;
+        std::cout << "Unknown option. Use -h for help." << endl;
         exit(1);
       }
    }
@@ -347,26 +315,26 @@ void parseArgs( int argc, char** argv, Args& arg ) {
      arg.inputFileName.assign( argv[optind] );
    }
    else {
-      cout << "Invalid number of arguments" << endl;
+      std::cout << "Invalid number of arguments" << endl;
       print_help(argv,arg);
    }
    // check algorithm parameters
    if(arg.w <4) {
-     cout << "Windows size must be at least 4\n";
+     std::cout << "Windows size must be at least 4\n";
      exit(1);
    }
    if(arg.p<10) {
-     cout << "Modulus must be at leas 10\n";
+     std::cout << "Modulus must be at leas 10\n";
      exit(1);
    }
    #ifdef NOTHREADS
    if(arg.th!=0) {
-     cout << "The NT version cannot use threads\n";
+     std::cout << "The NT version cannot use threads\n";
      exit(1);
    }
    #else
    if(arg.th<0) {
-     cout << "Number of threads cannot be negative\n";
+     std::cout << "Number of threads cannot be negative\n";
      exit(1);
    }
    #endif
@@ -379,8 +347,8 @@ int main(int argc, char** argv)
   // translate command line parameters
   Args arg;
   parseArgs(argc, argv, arg);
-  cout << "Windows size: " << arg.w << endl;
-  cout << "Stop word modulus: " << arg.p << endl;
+  std::cout << "Windows size: " << arg.w << endl;
+  std::cout << "Stop word modulus: " << arg.p << endl;
 
   // measure elapsed wall clock time
   time_t start_main = time(NULL);
@@ -402,14 +370,14 @@ int main(int argc, char** argv)
         #endif
       }
   } catch(const std::bad_alloc&) {
-      cout << "Out of memory (parsing phase)... emergency exit\n";
+      std::cout << "Out of memory (parsing phase)... emergency exit\n";
       die("bad alloc exception");
   }
   // first report
   uint64_t totDWord = kh_size(wordFreq);
-  cout << "Total input symbols: " << totChar << endl;
-  cout << "Found " << totDWord << " distinct words" <<endl;
-  cout << "Parsing took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";
+  std::cout << "Total input symbols: " << totChar << endl;
+  std::cout << "Found " << totDWord << " distinct words" <<endl;
+  std::cout << "Parsing took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";
   // check # distinct words
   if(totDWord>MAX_DISTINCT_WORDS) {
     cerr << "Emergency exit! The number of distinc words (" << totDWord << ")\n";
@@ -420,7 +388,7 @@ int main(int argc, char** argv)
   // -------------- second pass
   start_wc = time(NULL);
   // create array of dictionary words
-  vector<const char *> dictArray;
+  std::vector<const char *> dictArray;
   dictArray.reserve(totDWord);
   // fill array
   uint64_t sumLen = 0;
@@ -431,25 +399,26 @@ int main(int argc, char** argv)
     dictArray.push_back(kh_val(wordFreq, ki).str);
   }
   assert(dictArray.size()==totDWord);
-  cout << "Sum of lengths of dictionary words: " << sumLen << endl;
-  cout << "Total number of words: " << totWord << endl;
+  std::cout << "Sum of lengths of dictionary words: " << sumLen << endl;
+  std::cout << "Total number of words: " << totWord << endl;
   // sort dictionary
   sort(dictArray.begin(), dictArray.end(),[](const char *x, const char *y) {return std::strcmp(x, y) < 0;});
   // write plain dictionary and occ file, also compute rank for each hash
-  cout << "Writing plain dictionary and occ file\n";
+  std::cout << "Writing plain dictionary and occ file\n";
   writeDictOcc(arg, wordFreq, dictArray);
   dictArray.clear(); // reclaim memory
-  cout << "Dictionary construction took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";
+  std::cout << "Dictionary construction took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";
 
   // remap parse file
   start_wc = time(NULL);
-  cout << "Generating remapped parse file\n";
+  std::cout << "Generating remapped parse file\n";
   remapParse(arg, wordFreq);
-  cout << "Remapping parse file took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";
-  cout << "==== Elapsed time: " << difftime(time(NULL),start_main) << " wall clock seconds\n";
+  std::cout << "Remapping parse file took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";
+  std::cout << "==== Elapsed time: " << difftime(time(NULL),start_main) << " wall clock seconds\n";
   for(khiter_t ki = 0; ki < kh_end(wordFreq); ++ki)
     if(kh_exist(wordFreq, ki))
       std::free(kh_val(wordFreq, ki).str);
   return 0;
 }
 
+} // namespace bwt
