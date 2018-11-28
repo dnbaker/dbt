@@ -31,7 +31,7 @@ public:
         HASHMASK(maskfnc<hashvaluetype>(wordsize)),BtoN(1) {
         for (int i=0; i < n ; ++i) {
             BtoN *= B;
-            if constexpr(wordsize != (CHAR_BIT * sizeof(hashvaluetype))) BtoN &= HASHMASK;
+            if(!is_full_word()) BtoN &= HASHMASK;
         }
     }
 
@@ -98,6 +98,7 @@ public:
     khmap() {
         std::memset(&map_, 0, sizeof(map_));
     }
+    // TODO: consider compressing strings by storing in 4-bits per character
     void insert(uint64_t v, const char *s, size_t nelem) {
         khiter_t ki = kh_get(m, &map_, v);
         if(ki != kh_end(&map_)) {
@@ -116,6 +117,11 @@ public:
         }
     }
     void insert(uint64_t v, const char *s) {insert(v, s, std::strlen(s));}
+    template<typename T>
+    void insert(uint64_t v, const T &s) {
+        std::string t(s.begin(), s.end());
+        insert(v, t.data(), t.size());
+    }
     khmap(khmap &&m) {std::memset(this, 0, sizeof(*this)); *this = std::move(m);}
     khmap &operator=(khmap &&m) {
         std::free(map_.keys);
@@ -138,6 +144,8 @@ public:
     }
 };
 
+enum {Dollar = 0xFF};
+
 using Hasher = KarpRabinHashBits<uint64_t>;
 
 template<typename PointerType>
@@ -158,6 +166,15 @@ public:
         struct stat s;
         ::fstat(::fileno(ptr_), &s);
         return !S_ISFIFO(s.st_mode);
+    }
+    auto write(const void *buf, size_t n) {
+        if constexpr(is_gz()) {
+            return gzwrite(ptr_, buf, n);
+        } else return ::write(::fileno(ptr_), buf, n);
+    }
+    template<typename T>
+    auto write(T val) {
+        this->write(&val, sizeof(val));
     }
     auto resize_buffer(size_t newsz) {
         if constexpr(!is_gz()) {
@@ -182,6 +199,7 @@ public:
         if(ptr_ == nullptr)
             throw std::runtime_error(std::string("Could not open file at ") + path + " with mode" + mode);
     }
+    bool is_open() const {return ptr_ != nullptr;}
     auto eof() {
         if constexpr(is_gz())
             return gzeof(ptr_);
@@ -197,16 +215,26 @@ template<typename PointerType=std::FILE*>
 class HashPass {
     using FType = FpWrapper<PointerType>;
     Hasher h_;
-    khmap map_;
     uint64_t i_;
     std::deque<unsigned char> cstr_;
-    FType safp_, lastfp_, pafp_;
+    std::deque<unsigned char> q_;
+    FType safp_, lastfp_, pafp_, ifp_, hafp_;
     const char *prefix_;
+    std::vector<char> buf_;
+    size_t             bi_;
     // Prime 1?
 public:
+    khmap *map_;
+
+
+
     static constexpr uint64_t LARGE_PRIME = (1ull << 63) - 1;
     static constexpr uint64_t SMALL_PRIME = 109829;
-    HashPass(unsigned wsz, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref) {
+    static constexpr uint64_t MEDIUMPRIME = 1999999973;
+    static constexpr uint64_t WINDOW_MOD  = 100;
+
+
+    HashPass(unsigned wsz, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref), bi_(0) {
         std::string safn = pref; safn += ".sa";
         std::string mode = "wb";
         if(safp_.is_gz()) {
@@ -218,11 +246,79 @@ public:
         lastfp_.open(safn.data(), mode.data());
         safn = pref; safn += ".prs";
         pafp_.open(safn.data(), mode.data());
+        safn = pref; safn += ".hv";
+        hafp_.open(safn.data(), mode.data());
+        buf_.resize(1 << 14);
     }
+    int nextchar() {
+        if(__builtin_expect(bi_ == buf_.size(), 0)) {
+            size_t n = ifp_->read(buf_.data(), buf_.size());
+            if(!n) return EOF;
+            if(n != buf_.size())
+                buf_.resize(n);
+            bi_ = 0;
+        }
+        return buf_[bi_++];
+    }
+    void fill(size_t nelem=0, size_t start=0) {
+        size_t skip = 0, parse = 0, words = 0;
+        if(start) {
+            int c;
+            for(;(c = nextchar()) != EOF && q_.size() != h_.n;q_.push_back(c)) {
+                h_.eat(c);
+                q_.push_back(c);
+                if(++skip == nelem + start) {std::fprintf(stderr, "Warning: sequence too short\n"); return;}
+            }
+            if(q_.size() != w()) {std::fprintf(stderr, "Warning: could not fill. Returning early\n"); return;}
+            while(skip < w() || h_.hashvalue % WINDOW_MOD) {
+                if((c = nextchar()) == EOF) {std::fprintf(stderr, "Warning: sequence too short2\n"); return;}
+                if(++skip == nelem + start) {std::fprintf(stderr, "Warning: sequence too short3\n"); return;}
+                h_.update(q_.front(), c);
+                q_.pop_front();
+                q_.push_back(c);
+            }
+            parse = h_.n;
+            skip -= h_.n;
+            assert(h_.n == q_.size());
+            cstr_ = q_;
+        }
+        else
+            cstr_.push_front(Dollar);
+        size_t pos = start;
+        if(pos) pos += skip + w();
+        for(int c; (c = nextchar()) != EOF;) {
+            ++parse;
+            h_.update(q_.front(), c);
+            q_.pop_front();
+            q_.push_back(c);
+            cstr_.push_back(c);
+            if(h_.hashvalue % WINDOW_MOD == 0) {
+                ++words;
+                update(pos);
+                if(skip + parse == nelem + w()) break;
+            }
+        }
+        cstr_.insert(cstr_.end(), w(), Dollar);
+        update(pos);
+    }
+    void update(uint64_t &pos) {
+        auto hv = h_.hash(cstr_);
+        hafp_.write(hv); 
+        map_->insert(hv, cstr_);
+        lastfp_.write(cstr_[cstr_.size() - 1 - w()]);
+        if(pos==0) pos = cstr_.size()-1;
+        else       pos += cstr_.size() - w();
+        if(safp_.is_open())
+            safp_.write(pos);
+        cstr_.erase(cstr_.begin(), cstr_.size() - w());
+    }
+    auto w() const {return h_.n;}
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
     static constexpr auto modlp(T v) {return v & LARGE_PRIME;}
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
-    static constexpr auto modsp(T v) {return v & SMALL_PRIME;}
+    static constexpr auto modsp(T v) {return v & MEDIUMPRIME;}
+    template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
+    static constexpr auto modmp(T v) {return v & SMALL_PRIME;}
 };
 
 
