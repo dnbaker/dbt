@@ -438,6 +438,7 @@ int main(int argc, char** argv)
   // write plain dictionary and occ file, also compute rank for each hash
   cout << "Writing plain dictionary and occ file\n";
   writeDictOcc(arg, wordFreq, dictArray);
+  for(const auto c: dictArray) std::free(const_cast<char *>(c));
   dictArray.clear(); // reclaim memory
   cout << "Dictionary construction took: " << difftime(time(NULL),start_wc) << " wall clock seconds\n";
 
