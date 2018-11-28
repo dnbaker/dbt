@@ -40,7 +40,7 @@ public:
 
     // this is a convenience function, use eat,update and .hashvalue to use as a rolling hash function
     template<class container>
-    hashvaluetype  hash(container & c) {
+    hashvaluetype  hash(container & c) const {
         hashvaluetype answer(0);
         for(uint k = 0; k<c.size(); ++k) {
             hashvaluetype x(1);
@@ -49,6 +49,23 @@ public:
                 if constexpr(!is_full_word()) x &= HASHMASK;
             }
             x= (x * hasher.hashvalues[c[k]]);
+            if constexpr(!is_full_word()) x &= HASHMASK;
+            answer=(answer+x);
+            if constexpr(!is_full_word()) answer &= HASHMASK;
+        }
+        return answer;
+    }
+    hashvaluetype  hash(char *s) const {return hash(static_cast<const char *>(s));}
+    hashvaluetype  hash(const char *s) const {
+        hashvaluetype answer(0);
+        uint csz = std::strlen(s);
+        for(uint k = 0; k<csz; ++k) {
+            hashvaluetype x(1);
+            for(uint j = 0; j< csz-1-k; ++j) {
+                x= (x * B);
+                if constexpr(!is_full_word()) x &= HASHMASK;
+            }
+            x= (x * hasher.hashvalues[s[k]]);
             if constexpr(!is_full_word()) x &= HASHMASK;
             answer=(answer+x);
             if constexpr(!is_full_word()) answer &= HASHMASK;
@@ -120,6 +137,7 @@ public:
             kh_val(&map_, ki) = hit_t{const_cast<const char *>(s2), 0, 1};
         }
     }
+    const khash_t(m) *map() const {return &map_;}
     void insert(uint64_t v, const char *s) {insert(v, s, std::strlen(s));}
     template<typename T>
     void insert(uint64_t v, const T &s) {
@@ -146,9 +164,7 @@ public:
     }
     khmap(const khmap &) = delete;
     khmap& operator=(const khmap &) = delete;
-    ~khmap() {
-        this->free();
-    }
+    ~khmap() {this->free();}
     size_t size() const {return kh_size(&map_);}
     size_t capacity() const {return map_.n_buckets;}
     khmap &operator|=(const khmap &o) {
@@ -164,6 +180,7 @@ public:
                 }
             }
         }
+        return *this;
     }
 };
 
@@ -178,6 +195,9 @@ class FpWrapper {
 public:
     using type = PointerType;
     FpWrapper(type ptr=nullptr): ptr_(ptr), buf_(BUFSIZ) {}
+    FpWrapper(const char *p, const char *m): ptr_(nullptr), buf_(BUFSIZ) {
+        this->open(p, m);
+    }
     static constexpr bool is_gz() {
         return std::is_same_v<PointerType, gzFile>;
     }
@@ -199,12 +219,6 @@ public:
             return gzread(ptr_, ptr, nb);
         else
             return std::fread(ptr, 1, nb, ptr_);
-    }
-    auto write(const char *s) {
-        if constexpr(is_gz())
-            return gzputs(ptr_, s);
-        else
-            return std::fputs(s, ptr_);
     }
     auto resize_buffer(size_t newsz) {
         if constexpr(!is_gz()) {
@@ -234,7 +248,14 @@ public:
             return std::fwrite(buf, 1, nelem, ptr_);
     }
     template<typename T>
-    void write(T val) {this->write(&val, sizeof(val));}
+    auto write(T val) {
+        if constexpr(std::is_same_v<std::decay_t<T>, char *>) {
+            if constexpr(is_gz())
+                return gzputs(ptr_, val);
+            else
+                return std::fputs(val, ptr_);
+        } else return this->write(&val, sizeof(val));
+    }
     void open(const char *path, const char *mode) {
         if(ptr_) close();
         if constexpr(is_gz()) {
@@ -301,27 +322,27 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     std::set<const char *, StrCmp> pointers;
     std::string dictpath = prefix; dictpath += DEXT;
     std::string occpath = prefix; occpath   += OCCEXT;
-    FpWrapper dfp(dictpath.data(), "wb");
-    FpWrapper ocfp(occpath.data(), "wb");
+    FpWrapper<PointerType> dfp(dictpath.data(), "wb");
+    FpWrapper<PointerType> ocfp(occpath.data(), "wb");
     for(const auto &h: hp) {
         if(h.words) {
             tot += h.parse - (i++ ? h.w(): 0);
         }
-        for(size_t j = 0; j < h.map_.n_buckets; ++j) {
-            if(kh_exist(&h.map_, j))
-                pointers.insert(kh_val(&h.map_, j).s_);
+        for(size_t j = 0; j < h.map_->capacity(); ++j) {
+            if(kh_exist(h.map_->map(), j))
+                pointers.insert(kh_val(h.map_->map(), j).s_);
         }
         *map |= *h.map_;
         h.map_->free();
         // Can these resources be freed now?
     }
-    std::vector<char *> dictset(pointers.begin(), pointers.end());
+    std::vector<const char *> dictset(pointers.begin(), pointers.end());
     pointers.clear();
     for(auto &x: dictset) {
         x = strdup(x);
     }
     std::sort(dictset.begin(), dictset.end(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
-    uint64_t totDWord = kh_size(map);
+    uint64_t totDWord = map->size();
     size_t wrank = 0;
     // Write dictionary occurrences
     for(const auto c: dictset) {
@@ -329,8 +350,8 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
         auto hv = hp[0].hash(c);
         if(s != sl) throw std::runtime_error("Could not write to dict file.");
         dfp.write(EndOfWord);
-        std::free(c);
-        hit_t &h = map[hv];
+        std::free(const_cast<char *>(c));
+        hit_t &h = map->operator[](hv);
         assert(h.occ_);
         ocfp.write(h.occ_);
         assert(h.rank_ == 0);
@@ -381,7 +402,7 @@ public:
     khmap *map_;
 
     template<typename C>
-    auto hash(const C &c) {return h_.hash(c);}
+    auto hash(const C &c) const {return h_.hash(c);}
 
     static constexpr uint64_t LARGE_PRIME = (1ull << 63) - 1;
     static constexpr uint64_t SMALL_PRIME = 109829;
