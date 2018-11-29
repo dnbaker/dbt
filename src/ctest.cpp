@@ -11,13 +11,21 @@ int main(int argc, char *argv[]) {
     size_t wsz = 200;
     std::vector<dbt::HashPass<>> vecs;
     dbt::khmap main_map;
+    std::vector<std::string> sans;
     if(argc == 1) usage();
     for(auto av = argv + 1; *av; ++av) {
         std::string v = *av, v2 = v;
-        if(auto l = v2.find('.'); l != std::string::npos && l) v2.resize(l);
-        vecs.emplace_back(wsz, 1, 0, v2.data());
+        std::string san(util::sanitize_name(v));
+        //if(auto l = v2.find('.'); l != std::string::npos && l) v2.resize(l);
+        std::fprintf(stderr, "About to create thing at window size %zu with input path %s (v2 data: %s)\n", wsz, *av, v2.data());
+        vecs.emplace_back(wsz, 1, 0, san.data());
         auto &h = vecs.back();
         h.open_ifp(v.data());
+        h.make_map();
+        h.fill();
+        h.map_->assert_nonnull();
+        sans.emplace_back(san);
     }
-    dbt::merge_hashpasses("sdfds", vecs, &main_map);
+    std::fprintf(stderr, "Now merging stuff together\n");
+    dbt::merge_hashpasses("master", vecs, sans, &main_map);
 }

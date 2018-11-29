@@ -64,7 +64,8 @@ public:
             fclose(ptr_);
         ptr_ = nullptr;
     }
-    auto write(void *buf, size_t nelem) {
+    auto write(const char *s) {return write(s, std::strlen(s));}
+    auto write(const void *buf, size_t nelem) {
         if constexpr(is_gz())
             return gzwrite(ptr_, buf, nelem);
         else
@@ -88,9 +89,12 @@ public:
         }
         if(ptr_ == nullptr)
             throw std::runtime_error(std::string("Could not open file at ") + path + " with mode" + mode);
+#if !NDEBUG
+        std::fprintf(stderr, "Opened file at path %s with mode '%s'\n", path, mode);
+#endif
     }
     bool is_open() const {return ptr_ != nullptr;}
-    auto eof() {
+    auto eof() const {
         if constexpr(is_gz())
             return gzeof(ptr_);
         else

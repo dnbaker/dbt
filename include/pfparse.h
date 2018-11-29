@@ -46,6 +46,7 @@ public:
     void insert(uint64_t v, const char *s, size_t nelem) {
         khiter_t ki = kh_get(m, &map_, v);
         if(ki != kh_end(&map_)) {
+            assert(map_.vals[ki].s_);
             if(__builtin_expect(std::strcmp(s, map_.vals[ki].s_), 0))
                 throw std::runtime_error("Hash collision. Abort!");
             if(__builtin_expect(++map_.vals[ki].occ_ == 0, 0))
@@ -75,6 +76,15 @@ public:
         //std::memset(&m, 0, sizeof(m));
         return *this;
     }
+    void swap(khmap &m) {
+        char buf[sizeof(m)];
+        std::memcpy(buf, &m, sizeof(m));
+        std::memcpy(&m, this, sizeof(m));
+        std::memcpy(this, buf, sizeof(*this));
+    }
+    void assert_nonnull() const {
+        for_each([](auto k, const hit_t &h) {assert(h.s_);});
+    }
     hit_t &operator[](uint64_t v) {
         khiter_t ki = kh_get(m, &map_, v);
         if(ki == kh_end(&map_)) throw std::out_of_range(std::string("Missing key ") + std::to_string(v));
@@ -90,7 +100,41 @@ public:
     ~khmap() {this->free();}
     size_t size() const {return kh_size(&map_);}
     size_t capacity() const {return map_.n_buckets;}
+    bool exist(khint_t ki) const {return kh_exist(&map_, ki);}
+    template<typename Func>
+    void for_each(const Func &func) const {
+        for(khiter_t ki = 0; ki < kh_end(&map_); ++ki)
+            if(exist(ki))
+                func(kh_key(&map_, ki), kh_val(&map_, ki));
+    }
+    template<typename Func>
+    void for_each(const Func &func) {
+        for(khiter_t ki = 0; ki < kh_end(&map_); ++ki)
+            if(exist(ki))
+                func(kh_key(&map_, ki), kh_val(&map_, ki));
+    }
     khmap &operator|=(const khmap &o) {
+        o.for_each([&](const auto key, hit_t &h) {
+            khiter_t ki = kh_get(m, &map_, key);
+            if(ki == kh_end(&map_)) {
+                int khr;
+                ki = kh_put(m, &map_, key, &khr);
+                kh_val(&map_, ki) = h;
+                kh_val(&map_, ki).s_ = util::strdup(h.s_);
+            } else kh_val(&map_, ki).occ_ += h.occ_;
+        });
+#if !NDEBUG
+        for(size_t i = 0; i < o.map_.n_buckets; ++i) {
+            if(kh_exist(&o.map_, i)) {
+                assert(kh_val(&o.map_, i).s_);
+            }
+        }
+        for(size_t i = 0; i < map_.n_buckets; ++i) {
+            if(kh_exist(&map_, i)) {
+                assert(kh_val(&map_, i).s_);
+            }
+        }
+#endif
         for(size_t i = 0; i < o.map_.n_buckets; ++i) {
             if(kh_exist(&o.map_, i)) {
                 int khr;
@@ -100,6 +144,9 @@ public:
                     kh_val(&map_, ki).occ_ += kh_val(&o.map_, i).occ_;
                 } else {
                     kh_val(&map_, ki) = kh_val(&o.map_, i);
+                    if(kh_val(&map_, ki).s_ == nullptr) {
+                        throw std::runtime_error("This fails to be anything");
+                    }
                     kh_val(&map_, ki).s_ = util::strdup(kh_val(&map_, ki).s_);
                 }
             }
@@ -119,7 +166,7 @@ const std::string OCCEXT  = ".occ";
 template<typename PointerType=std::FILE*> class HashPass;
 
 template<typename PointerType=std::FILE*>
-void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType>> &hp, khmap *map) {
+void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType>> &hp, const std::vector<std::string> &paths, khmap *map) {
 /*
     When this completes, we have a dictionary, occurrence, and a parse file.
     The suffix array pieces have been generated for each subset, but not yet concatenated.
@@ -139,47 +186,50 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
  */
     assert(map);
     size_t tot = 0, i = 0;
-    struct StrCmp {
-        bool constexpr operator()(const char *s, const char *s2) const {
-            return std::strcmp(s, s2) < 0;
-        }
-    };
 
-    std::set<const char *, StrCmp> pointers;
     std::string dictpath = prefix; dictpath += DEXT;
     std::string occpath = prefix; occpath   += OCCEXT;
     util::FpWrapper<PointerType> dfp(dictpath.data(), "wb");
     util::FpWrapper<PointerType> ocfp(occpath.data(), "wb");
-    for(auto &h: hp) {
-        if(h.words) {
-            tot += h.parse - (i++ ? h.w(): 0);
-        }
-        for(size_t j = 0; j < h.map_->capacity(); ++j) {
-            if(kh_exist(h.map_->map(), j)) {
-                auto ip = pointers.insert(kh_val(h.map_->map(), j).s_);
-                if(ip.second == false) {
-                    std::free(const_cast<char *>(kh_val(h.map_->map(), j).s_));
-                    kh_val(h.map_->map(), j).s_ = nullptr;
-                }
+    if(hp.size() == 1) {
+        tot = hp[0].parse;
+        map->swap(*hp[0].map_);
+    } else {
+        for(auto &h: hp) {
+            if(h.words) {
+                tot += h.parse - (i++ ? h.w(): 0);
             }
+            *map |= *h.map_;
+            h.map_->free();
+            // Can these resources be freed now?
         }
-        *map |= *h.map_;
-        h.map_->free_map();
-        // Can these resources be freed now?
     }
-    std::vector<const char *> dictset(pointers.begin(), pointers.end());
-    pointers.clear();
-    for(auto &h: hp) h.map_->free();
-    for(auto &x: dictset)
-        x = util::strdup(x);
+    std::vector<const char *> dictset;
+    dictset.reserve(map->size());
+    map->for_each([&](auto k, const auto &h) {
+#if !NDEBUG
+        std::fprintf(stderr, "Inserting string '%s' with occ %d and rank %d and length %zu\n", h.s_, int(h.occ_), int(h.rank_), h.s_ ? std::strlen(h.s_): -1);
+#endif
+        assert(h.s_);
+        dictset.push_back(h.s_);}
+    );
+    for(auto &x: dictset) {
+        assert(x);
+        //x = util::strdup(x);
+    }
     std::sort(dictset.begin(), dictset.end(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
     uint64_t totDWord = map->size();
-    size_t wrank = 0;
+    std::fprintf(stderr, "totDWord: %" PRIu64 "\n", totDWord);
+    uint64_t wrank = 0;
     // Write dictionary occurrences
     for(const auto c: dictset) {
         size_t sl = std::strlen(c), s = dfp.write(c);
         auto hv = hp[0].hash(c);
-        if(s != sl) throw std::runtime_error("Could not write to dict file.");
+        if(s != sl) {
+            char buf[256];
+            std::sprintf(buf, "Could not write to dict file. string: %s s: %zu. sl: %zu", c, s, sl);
+            throw std::runtime_error(buf);
+        }
         dfp.write(EndOfWord);
         std::free(const_cast<char *>(c));
         hit_t &h = map->operator[](hv);
@@ -197,6 +247,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     util::FpWrapper<std::FILE *> pfp;
     pfp.open((std::string(prefix) + PEXT).data(), "wb");
     util::FpWrapper<std::FILE *> tfp;
+    auto nameit = paths.begin();
     tfp.open((std::string(prefix) + '.' + std::to_string(chunknum) + PEXT).data(), "rb");
     uint64_t hv;
     FOREVER {
@@ -260,7 +311,21 @@ public:
     static constexpr uint64_t MEDIUMPRIME = 1999999973;
     static constexpr uint64_t WINDOW_MOD  = 100;
 
-    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref), bi_(0) {
+    HashPass(const HashPass &) = delete;
+    HashPass(HashPass &&o): h_(std::move(o.h_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)), safp_(std::move(o.safp_)), lastfp_(std::move(o.lastfp_)), pafp_(std::move(o.pafp_)), ifp_(std::move(o.ifp_)), prefix_(o.prefix_), buf_(std::move(o.buf_)), bi_(o.bi_), skip(o.skip), parse(o.parse), words(o.words) {
+    }
+
+
+    void make_map() {
+        map_ = new khmap();
+    }
+
+    ~HashPass() {
+        if(map_) delete map_;
+    }
+
+    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref), bi_(0), map_(nullptr) {
+        std::fprintf(stderr, "Starting hashpass with prefix=%s\n", pref);
         std::string safn = pref;
         if(nchunks > 1) safn += '.', safn += std::to_string(chunknum);
         safn += ".sa";
@@ -269,23 +334,26 @@ public:
             if(compression == 0) mode = "wT";
             else mode += std::to_string(compression);
         }
+        std::fprintf(stderr, "About to open sa file at %s\n", safn.data());
         safp_.open(safn.data(), mode.data());
         safn = pref;
         if(nchunks > 1) safn += '.', safn += std::to_string(chunknum);
         safn += ".last";
+        std::fprintf(stderr, "About to open last file at %s\n", safn.data());
         lastfp_.open(safn.data(), mode.data());
         safn = pref;
         if(nchunks > 1) safn += '.', safn += std::to_string(chunknum);
         safn += ".parse";
         pafp_.open(safn.data(), mode.data());
         buf_.resize(1 << 14);
+        std::fprintf(stderr, "Opened parse fp at %s\n", safn.data());
     }
     void open_ifp(const char *path, const char *mode="rb") {
         ifp_.open(path, mode);
     }
     int nextchar() {
         if(__builtin_expect(bi_ == buf_.size(), 0)) {
-            size_t n = ifp_->read(buf_.data(), buf_.size());
+            size_t n = ifp_.read(buf_.data(), buf_.size());
             if(!n) return EOF;
             if(n != buf_.size())
                 buf_.resize(n);
@@ -304,13 +372,13 @@ public:
         if(start) {
             ifp_.seek(start);
             int c;
-            for(;(c = nextchar()) != EOF && q_.size() != h_.n;q_.push_back(c)) {
+            for(;(c = nextchar()) != EOF && q_.size() < unsigned(w());q_.push_back(c)) {
                 h_.eat(c);
                 q_.push_back(c);
                 if(++skip == nelem + start) {std::fprintf(stderr, "Warning: sequence too short\n"); return;}
             }
-            if(q_.size() != w()) {std::fprintf(stderr, "Warning: could not fill. Returning early\n"); return;}
-            while(skip < w() || h_.hashvalue % WINDOW_MOD) {
+            if(q_.size() != unsigned(w())) {std::fprintf(stderr, "Warning: could not fill. Returning early\n"); return;}
+            while(skip < unsigned(w()) || h_.hashvalue % WINDOW_MOD) {
                 if((c = nextchar()) == EOF) {std::fprintf(stderr, "Warning: sequence too short2\n"); return;}
                 if(++skip == nelem + start) {std::fprintf(stderr, "Warning: sequence too short3\n"); return;}
                 h_.update(q_.front(), c);
@@ -322,12 +390,19 @@ public:
             assert(h_.n == q_.size());
             cstr_ = q_;
         } else cstr_.push_front(Dollar);
-        size_t pos = start;
+        std::fprintf(stderr, "size of cstr: %zu\n", cstr_.size());
+        uint64_t pos = start;
         if(pos) pos += skip + w();
+        uint64_t processed = 0;
         for(int c; (c = nextchar()) != EOF;) {
+            //std::fprintf(stderr, "Processing position here %zu with q size %zu\n", size_t(++processed), q_.size());
             ++parse;
-            h_.update(q_.front(), c);
-            q_.pop_front();
+            if(unlikely(q_.size() < unsigned(w()))) {
+                h_.eat(c);
+            } else {
+                h_.update(q_.front(), c);
+                q_.pop_front();
+            }
             q_.push_back(c);
             cstr_.push_back(c);
             if(h_.hashvalue % WINDOW_MOD == 0) {
@@ -336,11 +411,17 @@ public:
                 if(skip + parse == nelem + w()) break;
             }
         }
+        std::fprintf(stderr, "Stuff stuff stuff with cstr size before %zu\n", cstr_.size());
         cstr_.insert(cstr_.end(), w(), Dollar);
+        std::fprintf(stderr, "Stuff stuff stuff with cstr size after %zu\n", cstr_.size());
         update(pos);
     }
     void update(uint64_t &pos) {
         auto hv = h_.hash(cstr_);
+#if !NDEBUG
+        std::string t(cstr_.begin(), cstr_.end());
+        std::fprintf(stderr, "Just hashed string %s\n", t.data());
+#endif
         pafp_.write(hv);
         map_->insert(hv, cstr_);
         lastfp_.write(cstr_[cstr_.size() - 1 - w()]);
@@ -348,7 +429,7 @@ public:
         else       pos += cstr_.size() - w();
         if(safp_.is_open())
             safp_.write(pos);
-        cstr_.erase(cstr_.begin(), cstr_.size() - w());
+        cstr_.erase(cstr_.begin(), cstr_.begin() + (cstr_.size() - w()));
     }
     auto w() const {return h_.n;}
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
