@@ -9,92 +9,9 @@
 #include "util.h"
 #include "klib/khash.h"
 #include "rollinghashcpp/rabinkarphash.h"
-#include <sys/stat.h>
 
 namespace dbt {
 
-template <typename hashvaluetype = uint32, typename chartype =  unsigned char, unsigned wordsize=64>
-class KarpRabinHashBits {
-    // Modified from https://github.com/lemire/rollinghashcpp
-    // The key difference is that wordsize is now templated
-    // And the masking is only performed if nbits != the number of bits in the type
-public:
-    // myn is the length of the sequences, e.g., 3 means that you want to hash sequences of 3 characters
-    // mywordsize is the number of bits you which to receive as hash values, e.g., 19 means that the hash values are 19-bit integers
-    KarpRabinHashBits(int myn):  hashvalue(0), n(myn),
-        hasher( maskfnc<hashvaluetype>(wordsize)),
-        HASHMASK(maskfnc<hashvaluetype>(wordsize)),BtoN(1) {
-        for (int i=0; i < n ; ++i) {
-            BtoN *= B;
-            if(!is_full_word()) BtoN &= HASHMASK;
-        }
-    }
-
-    // prepare to process a new string, you will need to call "eat" again
-    void reset() {
-      hashvalue = 0;
-    }
-    static constexpr bool is_full_word() {
-        return wordsize == (CHAR_BIT * sizeof(hashvaluetype));
-    }
-
-    // this is a convenience function, use eat,update and .hashvalue to use as a rolling hash function
-    template<class container>
-    hashvaluetype  hash(container & c) const {
-        hashvaluetype answer(0);
-        for(uint k = 0; k<c.size(); ++k) {
-            hashvaluetype x(1);
-            for(uint j = 0; j< c.size()-1-k; ++j) {
-                x= (x * B);
-                if constexpr(!is_full_word()) x &= HASHMASK;
-            }
-            x= (x * hasher.hashvalues[c[k]]);
-            if constexpr(!is_full_word()) x &= HASHMASK;
-            answer=(answer+x);
-            if constexpr(!is_full_word()) answer &= HASHMASK;
-        }
-        return answer;
-    }
-    hashvaluetype  hash(char *s) const {return hash(static_cast<const char *>(s));}
-    hashvaluetype  hash(const char *s) const {
-        hashvaluetype answer(0);
-        uint csz = std::strlen(s);
-        for(uint k = 0; k<csz; ++k) {
-            hashvaluetype x(1);
-            for(uint j = 0; j< csz-1-k; ++j) {
-                x= (x * B);
-                if constexpr(!is_full_word()) x &= HASHMASK;
-            }
-            x= (x * hasher.hashvalues[s[k]]);
-            if constexpr(!is_full_word()) x &= HASHMASK;
-            answer=(answer+x);
-            if constexpr(!is_full_word()) answer &= HASHMASK;
-        }
-        return answer;
-    }
-
-    // add inchar as an input, this is used typically only at the start
-    // the hash value is updated to that of a longer string (one where inchar was appended)
-    void eat(chartype inchar) {
-        hashvalue = (B*hashvalue +  hasher.hashvalues[inchar] );
-        if constexpr(!is_full_word()) hashvalue &= HASHMASK;
-    }
-
-    // add inchar as an input and remove outchar, the hashvalue is updated
-    // this function can be used to update the hash value from the hash value of [outchar]ABC to the hash value of ABC[inchar]
-    void update(chartype outchar, chartype inchar) {
-        hashvalue = (B*hashvalue +  hasher.hashvalues[inchar] - BtoN *  hasher.hashvalues[outchar]);
-        if constexpr(!is_full_word()) hashvalue &= HASHMASK;
-    }
-
-
-    hashvaluetype hashvalue;
-    int n;
-    CharacterHash<hashvaluetype,chartype> hasher;
-    const hashvaluetype HASHMASK;
-    hashvaluetype BtoN;
-    static constexpr hashvaluetype B=37;
-};
 
 struct hit_t {
     const char *s_;
@@ -110,14 +27,20 @@ public:
     khmap() {
         std::memset(&map_, 0, sizeof(map_));
     }
-    void free() {
-        for(khiter_t ki = 0; ki < map_.n_buckets; ++ki)
-            if(kh_exist(&map_, ki))
-                std::free(const_cast<char *>(map_.vals[ki].s_));
+    void free_map() {
         std::free(map_.keys);
         std::free(map_.flags);
         std::free(map_.vals);
         std::memset(&map_, 0, sizeof(map_));
+    }
+    void free_values() {
+        for(khiter_t ki = 0; ki < map_.n_buckets; ++ki)
+            if(kh_exist(&map_, ki))
+                std::free(const_cast<char *>(map_.vals[ki].s_));
+    }
+    void free() {
+        free_values();
+        free_map();
     }
     // TODO: consider compressing strings by storing in 4-bits per character
     void insert(uint64_t v, const char *s, size_t nelem) {
@@ -177,6 +100,7 @@ public:
                     kh_val(&map_, ki).occ_ += kh_val(&o.map_, i).occ_;
                 } else {
                     kh_val(&map_, ki) = kh_val(&o.map_, i);
+                    kh_val(&map_, ki).s_ = util::strdup(kh_val(&map_, ki).s_);
                 }
             }
         }
@@ -187,110 +111,6 @@ public:
 enum {Dollar = 0xFF, EndOfWord = 0x00};
 
 using Hasher = KarpRabinHashBits<uint64_t>;
-
-template<typename PointerType>
-class FpWrapper {
-    PointerType ptr_;
-    std::vector<char> buf_;
-public:
-    using type = PointerType;
-    FpWrapper(type ptr=nullptr): ptr_(ptr), buf_(BUFSIZ) {}
-    FpWrapper(const char *p, const char *m): ptr_(nullptr), buf_(BUFSIZ) {
-        this->open(p, m);
-    }
-    static constexpr bool is_gz() {
-        return std::is_same_v<PointerType, gzFile>;
-    }
-    static constexpr bool maybe_seekable() {
-        return !std::is_same_v<PointerType, gzFile>;
-    }
-    bool seekable() const {
-        if constexpr(is_gz()) return false;
-        struct stat s;
-        ::fstat(::fileno(ptr_), &s);
-        return !S_ISFIFO(s.st_mode);
-    }
-    template<typename T>
-    auto read(T *val) {
-        return this->read(val, sizeof(T));
-    }
-    auto read(void *ptr, size_t nb) {
-        if constexpr(is_gz())
-            return gzread(ptr_, ptr, nb);
-        else
-            return std::fread(ptr, 1, nb, ptr_);
-    }
-    auto resize_buffer(size_t newsz) {
-        if constexpr(!is_gz()) {
-            buf_.resize(newsz);
-            std::setvbuf(ptr_, buf_.data(), buf_.size());
-        } else {
-            gzbuffer(ptr_, newsz);
-        }
-    }
-    void seek(size_t pos) {
-        if constexpr(is_gz())
-            gzseek(ptr_, pos);
-        else
-            std::fseek(ptr_, pos, SEEK_SET);
-    }
-    void close() {
-        if constexpr(is_gz())
-            gzclose(ptr_);
-        else
-            fclose(ptr_);
-        ptr_ = nullptr;
-    }
-    auto write(void *buf, size_t nelem) {
-        if constexpr(is_gz())
-            return gzwrite(ptr_, buf, nelem);
-        else
-            return std::fwrite(buf, 1, nelem, ptr_);
-    }
-    template<typename T>
-    auto write(T val) {
-        if constexpr(std::is_same_v<std::decay_t<T>, char *>) {
-            if constexpr(is_gz())
-                return gzputs(ptr_, val);
-            else
-                return std::fputs(val, ptr_);
-        } else return this->write(&val, sizeof(val));
-    }
-    void open(const char *path, const char *mode) {
-        if(ptr_) close();
-        if constexpr(is_gz()) {
-            ptr_ = gzopen(path, mode);
-        } else {
-            ptr_ = fopen(path, mode);
-        }
-        if(ptr_ == nullptr)
-            throw std::runtime_error(std::string("Could not open file at ") + path + " with mode" + mode);
-    }
-    bool is_open() const {return ptr_ != nullptr;}
-    auto eof() {
-        if constexpr(is_gz())
-            return gzeof(ptr_);
-        else
-            std::feof(ptr_);
-    }
-    ~FpWrapper() {
-        if(ptr_) close();
-    }
-};
-
-struct StrCmp {
-    bool constexpr operator()(const char *s, const char *s2) const {
-        return std::strcmp(s, s2) < 0;
-    }
-};
-
-char *strdup(const char *s) {
-    size_t l = std::strlen(s) + 1;
-    char *ret = static_cast<char *>(std::malloc(l));
-    if(!ret) throw std::bad_alloc();
-    std::memcpy(ret, s, l);
-    return ret;
-}
 
 const std::string DEXT    = ".dict";
 const std::string PEXT    = ".parse";
@@ -319,28 +139,39 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
  */
     assert(map);
     size_t tot = 0, i = 0;
+    struct StrCmp {
+        bool constexpr operator()(const char *s, const char *s2) const {
+            return std::strcmp(s, s2) < 0;
+        }
+    };
+
     std::set<const char *, StrCmp> pointers;
     std::string dictpath = prefix; dictpath += DEXT;
     std::string occpath = prefix; occpath   += OCCEXT;
-    FpWrapper<PointerType> dfp(dictpath.data(), "wb");
-    FpWrapper<PointerType> ocfp(occpath.data(), "wb");
-    for(const auto &h: hp) {
+    util::FpWrapper<PointerType> dfp(dictpath.data(), "wb");
+    util::FpWrapper<PointerType> ocfp(occpath.data(), "wb");
+    for(auto &h: hp) {
         if(h.words) {
             tot += h.parse - (i++ ? h.w(): 0);
         }
         for(size_t j = 0; j < h.map_->capacity(); ++j) {
-            if(kh_exist(h.map_->map(), j))
-                pointers.insert(kh_val(h.map_->map(), j).s_);
+            if(kh_exist(h.map_->map(), j)) {
+                auto ip = pointers.insert(kh_val(h.map_->map(), j).s_);
+                if(ip.second == false) {
+                    std::free(const_cast<char *>(kh_val(h.map_->map(), j).s_));
+                    kh_val(h.map_->map(), j).s_ = nullptr;
+                }
+            }
         }
         *map |= *h.map_;
-        h.map_->free();
+        h.map_->free_map();
         // Can these resources be freed now?
     }
     std::vector<const char *> dictset(pointers.begin(), pointers.end());
     pointers.clear();
-    for(auto &x: dictset) {
-        x = strdup(x);
-    }
+    for(auto &h: hp) h.map_->free();
+    for(auto &x: dictset)
+        x = util::strdup(x);
     std::sort(dictset.begin(), dictset.end(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
     uint64_t totDWord = map->size();
     size_t wrank = 0;
@@ -363,9 +194,9 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
 #if MAKE_HISTOGRAM
     std::vector<uint64_t> ranks(map.size() + 1);
 #endif
-    FpWrapper<std::FILE *> pfp;
+    util::FpWrapper<std::FILE *> pfp;
     pfp.open((std::string(prefix) + PEXT).data(), "wb");
-    FpWrapper<std::FILE *> tfp;
+    util::FpWrapper<std::FILE *> tfp;
     tfp.open((std::string(prefix) + '.' + std::to_string(chunknum) + PEXT).data(), "rb");
     uint64_t hv;
     FOREVER {
@@ -383,9 +214,29 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     }
 }
 
+
+
+namespace lut {
+
+//print(", ".join(map(str, (1 if x in 'Aa' else 2 if x in 'Cc' else 4 if x in 'Gg' else 8 if x in 'Tt' else 0 if x in '\t\n ' else 15 for x in map(chr, range(256))))))
+static constexpr uint8_t lut4b [] {
+    15, 15, 15, 15, 15, 15, 15, 15, 15, 0, 0, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 0, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 1, 15, 2, 15, 15, 15, 4, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 8, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 1, 15, 2, 15, 15, 15, 4, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 8, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15
+};
+
+static constexpr uint8_t lut2b [] {
+    //print(", ".join(map(str, (0 if x in 'Aa' else 1 if x in 'Cc' else 2 if x in 'Gg' else 3 if x in 'Tt' else 4 for x in map(chr, range(256))))))
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4
+};
+
+static constexpr uint8_t printable [] {
+    33, 33, 33, 33, 33, 33, 33, 33, 33, 9, 10, 11, 12, 13, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33
+};
+
+} // namespace lut
+
 template<typename PointerType>
 class HashPass {
-    using FType = FpWrapper<PointerType>;
+    using FType = util::FpWrapper<PointerType>;
 public:
     Hasher h_;
 private:
@@ -429,6 +280,9 @@ public:
         pafp_.open(safn.data(), mode.data());
         buf_.resize(1 << 14);
     }
+    void open_ifp(const char *path, const char *mode="rb") {
+        ifp_.open(path, mode);
+    }
     int nextchar() {
         if(__builtin_expect(bi_ == buf_.size(), 0)) {
             size_t n = ifp_->read(buf_.data(), buf_.size());
@@ -439,8 +293,14 @@ public:
         }
         return buf_[bi_++];
     }
+    int filternextchar(uint8_t *tbl=lut::printable) {
+        int nc;
+        while((nc = nextchar()) != EOF && (nc = tbl[nc]) != 0);
+        return nc;
+    }
     void fill(size_t nelem=0, size_t start=0) {
         skip = 0, parse = 0, words = 0;
+        assert(ifp_.is_open());
         if(start) {
             ifp_.seek(start);
             int c;
@@ -461,9 +321,7 @@ public:
             skip -= h_.n;
             assert(h_.n == q_.size());
             cstr_ = q_;
-        }
-        else
-            cstr_.push_front(Dollar);
+        } else cstr_.push_front(Dollar);
         size_t pos = start;
         if(pos) pos += skip + w();
         for(int c; (c = nextchar()) != EOF;) {
