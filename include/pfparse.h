@@ -84,6 +84,9 @@ public:
     }
     void assert_nonnull() const {
         for_each([](auto k, const hit_t &h) {assert(h.s_);});
+#if !NDEBUG
+        for_each([](auto k, const hit_t &h) {std::fprintf(stderr, "%zu\t%s\n", h.s_ ? size_t(std::strlen(h.s_)): size_t(-1), h.s_);});
+#endif
     }
     hit_t &operator[](uint64_t v) {
         khiter_t ki = kh_get(m, &map_, v);
@@ -114,6 +117,8 @@ public:
                 func(kh_key(&map_, ki), kh_val(&map_, ki));
     }
     khmap &operator|=(const khmap &o) {
+        assert_nonnull();
+        o.assert_nonnull();
         o.for_each([&](const auto key, hit_t &h) {
             khiter_t ki = kh_get(m, &map_, key);
             if(ki == kh_end(&map_)) {
@@ -123,18 +128,7 @@ public:
                 kh_val(&map_, ki).s_ = util::strdup(h.s_);
             } else kh_val(&map_, ki).occ_ += h.occ_;
         });
-#if !NDEBUG
-        for(size_t i = 0; i < o.map_.n_buckets; ++i) {
-            if(kh_exist(&o.map_, i)) {
-                assert(kh_val(&o.map_, i).s_);
-            }
-        }
-        for(size_t i = 0; i < map_.n_buckets; ++i) {
-            if(kh_exist(&map_, i)) {
-                assert(kh_val(&map_, i).s_);
-            }
-        }
-#endif
+#if 0
         for(size_t i = 0; i < o.map_.n_buckets; ++i) {
             if(kh_exist(&o.map_, i)) {
                 int khr;
@@ -151,6 +145,7 @@ public:
                 }
             }
         }
+#endif
         return *this;
     }
 };
@@ -194,13 +189,15 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     if(hp.size() == 1) {
         tot = hp[0].parse;
         map->swap(*hp[0].map_);
+        std::fprintf(stderr, "Swapping instead of merging\n");
     } else {
+        std::fprintf(stderr, "Merging instead of swapping with %zu hps\n", hp.size());
         for(auto &h: hp) {
             if(h.words) {
                 tot += h.parse - (i++ ? h.w(): 0);
             }
             *map |= *h.map_;
-            h.map_->free();
+            //h.map_->free();
             // Can these resources be freed now?
         }
     }
@@ -225,6 +222,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     for(const auto c: dictset) {
         size_t sl = std::strlen(c), s = dfp.write(c);
         auto hv = hp[0].hash(c);
+        std::fprintf(stderr, "string %s/%zu has has %" PRIu64 " hash value\n", c, sl, hv);
         if(s != sl) {
             char buf[256];
             std::sprintf(buf, "Could not write to dict file. string: %s s: %zu. sl: %zu", c, s, sl);
