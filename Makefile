@@ -53,7 +53,9 @@ all: $(EX)
 
 d: $(D_EX)
 
-%: src/%.cpp 
+HEADERS=$(wildcard include/*.h)
+
+%: src/%.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(DBG) $(INCLUDE) $(LD) $(OBJ) -fsanitize=undefined -fsanitize=leak $< -o $@ $(LIB)
 clean:
 	rm -f $(EX)

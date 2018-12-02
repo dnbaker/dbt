@@ -2,6 +2,7 @@
 #define PREFIX_FREE_PARSE_H__
 #include <string>
 #include <algorithm>
+#include <numeric>
 #include <vector>
 #include <cstdio>
 #include <deque>
@@ -20,6 +21,14 @@ struct hit_t {
 };
 
 KHASH_MAP_INIT_INT64(m, hit_t)
+
+template<typename T>
+void print_as_values(const T &cstr_) {
+    std::string tmp;
+    for(const auto c: cstr_) tmp += std::to_string(int(c)), tmp += ',';
+    tmp.back() = '\n';
+    std::fprintf(stderr, "cstr values: %s\n", tmp.data());
+}
 
 class khmap {
     khash_t(m) map_;
@@ -59,6 +68,10 @@ public:
             std::memcpy(s2, s, nelem);
             s2[nelem] = '\0';
             kh_val(&map_, ki) = hit_t{const_cast<const char *>(s2), 0, 1};
+            std::set<char> set(s2, s2 + nelem);
+            assert(std::accumulate(s2, s2 + nelem, true, [](bool v, const signed char c) -> bool {
+                return v && (c >= 0);
+            }));
         }
     }
     const khash_t(m) *map() const {return &map_;}
@@ -150,7 +163,6 @@ public:
     }
 };
 
-enum {Dollar = 0xFF, EndOfWord = 0x00};
 
 using Hasher = KarpRabinHashBits<uint64_t>;
 
@@ -201,35 +213,26 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
             // Can these resources be freed now?
         }
     }
-    std::vector<const char *> dictset;
-    dictset.reserve(map->size());
-    map->for_each([&](auto k, const auto &h) {
-#if !NDEBUG
-        std::fprintf(stderr, "Inserting string '%s' with occ %d and rank %d and length %zu\n", h.s_, int(h.occ_), int(h.rank_), h.s_ ? std::strlen(h.s_): -1);
-#endif
-        assert(h.s_);
-        dictset.push_back(h.s_);}
-    );
-    for(auto &x: dictset) {
-        assert(x);
-        //x = util::strdup(x);
-    }
-    std::sort(dictset.begin(), dictset.end(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
+    const char **dictset = static_cast<const char **>(
+        std::malloc(map->size() * sizeof(const char *))), **it = dictset;
+    map->for_each([&](auto k, const auto &h) {assert(h.s_);*it++ = h.s_;});
+    std::sort(dictset, dictset + map->size(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
+    std::free(dictset);
     uint64_t totDWord = map->size();
     std::fprintf(stderr, "totDWord: %" PRIu64 "\n", totDWord);
     uint64_t wrank = 0;
     // Write dictionary occurrences
-    for(const auto c: dictset) {
+    for(it = dictset; it < dictset + map->size();) {
+        const char *c = *it++;
         size_t sl = std::strlen(c), s = dfp.write(c);
         auto hv = hp[0].hash(c);
-        std::fprintf(stderr, "string %s/%zu has has %" PRIu64 " hash value\n", c, sl, hv);
+        //std::fprintf(stderr, "string %s/%zu has has %" PRIu64 " hash value\n", c, sl, hv);
         if(s != sl) {
             char buf[256];
             std::sprintf(buf, "Could not write to dict file. string: %s s: %zu. sl: %zu", c, s, sl);
             throw std::runtime_error(buf);
         }
-        dfp.write(EndOfWord);
-        std::free(const_cast<char *>(c));
+        dfp.write(util::EndOfWord);
         hit_t &h = map->operator[](hv);
         assert(h.occ_);
         ocfp.write(h.occ_);
@@ -245,21 +248,20 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     util::FpWrapper<std::FILE *> pfp;
     pfp.open((std::string(prefix) + PEXT).data(), "wb");
     util::FpWrapper<std::FILE *> tfp;
-    auto nameit = paths.begin();
-    tfp.open((std::string(prefix) + '.' + std::to_string(chunknum) + PEXT).data(), "rb");
-    uint64_t hv;
-    FOREVER {
-        if(tfp.read(&hv) != sizeof(hv)) {
-            if(chunknum + 1 == hp.size())
-                break;
-            tfp.open((std::string(prefix) + '.' + std::to_string(++chunknum) + PEXT).data(), "rb");
-            continue;
-        }
-        uint64_t rank = map->operator[](hv).rank_;
+    {
+        std::fprintf(stderr, "Paths! %zu of them\n", paths.size());
+        for(const auto &pref: paths)
+            std::fprintf(stderr, "pref is %s\n", pref.data());
+    }
+    for(const auto &pref: paths) {
+        tfp.open((pref + PEXT).data(), "rb");
+        for(uint64_t hv;tfp.read(&hv) != sizeof(hv);) {
+            uint64_t rank = map->operator[](hv).rank_;
 #if MAKE_HISTOGRAM
-        ++ranks[rank];
+            ++ranks[rank];
 #endif
-        pfp.write(rank);
+            pfp.write(rank);
+        }
     }
 }
 
@@ -322,10 +324,9 @@ public:
         if(map_) delete map_;
     }
 
-    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref), bi_(0), map_(nullptr) {
+    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref), buf_(1<<14), bi_(buf_.size()), map_(nullptr) {
         std::fprintf(stderr, "Starting hashpass with prefix=%s\n", pref);
-        std::string safn = pref;
-        if(nchunks > 1) safn += '.', safn += std::to_string(chunknum);
+        std::string safn = pref + '.' + std::to_string(chunknum);
         safn += ".sa";
         std::string mode = "wb";
         if(safp_.is_gz()) {
@@ -334,16 +335,14 @@ public:
         }
         std::fprintf(stderr, "About to open sa file at %s\n", safn.data());
         safp_.open(safn.data(), mode.data());
-        safn = pref;
-        if(nchunks > 1) safn += '.', safn += std::to_string(chunknum);
+        safn = pref + '.' + std::to_string(chunknum);
         safn += ".last";
         std::fprintf(stderr, "About to open last file at %s\n", safn.data());
         lastfp_.open(safn.data(), mode.data());
         safn = pref;
-        if(nchunks > 1) safn += '.', safn += std::to_string(chunknum);
+        safn = pref + '.' + std::to_string(chunknum);
         safn += ".parse";
         pafp_.open(safn.data(), mode.data());
-        buf_.resize(1 << 14);
         std::fprintf(stderr, "Opened parse fp at %s\n", safn.data());
     }
     void open_ifp(const char *path, const char *mode="rb") {
@@ -383,42 +382,47 @@ public:
                 q_.pop_front();
                 q_.push_back(c);
             }
-            parse = h_.n;
-            skip -= h_.n;
-            assert(h_.n == q_.size());
+            parse = w();
+            skip -= w();
+            assert(unsigned(w()) == q_.size());
             cstr_ = q_;
-        } else cstr_.push_front(Dollar);
+        } else cstr_.push_front(util::Dollar);
         std::fprintf(stderr, "size of cstr: %zu\n", cstr_.size());
         uint64_t pos = start;
         if(pos) pos += skip + w();
-        uint64_t processed = 0;
+#define print_cstr() {\
+        std::string tmp(cstr_.begin(), cstr_.end());\
+        std::fprintf(stderr, "tmp: %s. tmp.size(): %zu\n", tmp.data() + (start == 0), tmp.size());\
+        print_as_values(cstr_);\
+    }
         for(int c; (c = nextchar()) != EOF;) {
-            //std::fprintf(stderr, "Processing position here %zu with q size %zu\n", size_t(++processed), q_.size());
             ++parse;
             if(unlikely(q_.size() < unsigned(w()))) {
-                h_.eat(c);
+                h_.eat(static_cast<unsigned char>(c));
+                q_.push_back(c);
+                cstr_.push_back(c);
+                print_cstr();
             } else {
-                h_.update(q_.front(), c);
+                assert(q_.size() == unsigned(w()));
+                h_.update(static_cast<unsigned char>(q_.front()), static_cast<unsigned char>(c));
                 q_.pop_front();
-            }
-            q_.push_back(c);
-            cstr_.push_back(c);
-            if(h_.hashvalue % WINDOW_MOD == 0) {
-                ++words;
-                update(pos);
-                if(skip + parse == nelem + w()) break;
+                q_.push_back(c);
+                cstr_.push_back(c);
+                if(h_.hashvalue % WINDOW_MOD == 0) {
+                    ++words;
+                    update(pos);
+                    if(nelem && skip + parse == nelem + w()) break;
+                }
             }
         }
-        std::fprintf(stderr, "Stuff stuff stuff with cstr size before %zu\n", cstr_.size());
-        cstr_.insert(cstr_.end(), w(), Dollar);
-        std::fprintf(stderr, "Stuff stuff stuff with cstr size after %zu\n", cstr_.size());
+        cstr_.insert(cstr_.end(), w(), util::Dollar);
         update(pos);
     }
     void update(uint64_t &pos) {
         auto hv = h_.hash(cstr_);
 #if !NDEBUG
-        std::string t(cstr_.begin(), cstr_.end());
-        std::fprintf(stderr, "Just hashed string %s\n", t.data());
+        //std::string t(cstr_.begin(), cstr_.end());
+        //std::fprintf(stderr, "Just hashed string with size %zu '%s'/'%s'with hash %" PRIu64 "\n", cstr_.size(), t.data(), t.data() + 1, hv);
 #endif
         pafp_.write(hv);
         map_->insert(hv, cstr_);
