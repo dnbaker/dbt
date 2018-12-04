@@ -55,7 +55,7 @@ d: $(D_EX)
 
 HEADERS=$(wildcard include/*.h)
 
-SANITIZERS=address undefined leak pointer-compare # pointer-substract
+SANITIZERS=# address # undefined # leak pointer-compare # pointer-substract
 
 %: src/%.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(DBG) $(INCLUDE) $(LD) $(OBJ) $(patsubst %,-fsanitize=%,$(SANITIZERS)) $< -o $@ $(LIB)

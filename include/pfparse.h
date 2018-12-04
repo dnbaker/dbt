@@ -9,7 +9,7 @@
 #include <set>
 #include "util.h"
 #include "klib/khash.h"
-#include "rollinghashcpp/rabinkarphash.h"
+#include "include/rabinkarphash.h"
 
 namespace dbt {
 
@@ -225,7 +225,6 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
         std::malloc(map->size() * sizeof(const char *))), **it = dictset;
     map->for_each([&](auto k, const auto &h) {assert(h.s_);*it++ = h.s_;});
     std::sort(dictset, dictset + map->size(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
-    std::free(dictset);
     uint64_t totDWord = map->size();
     std::fprintf(stderr, "totDWord: %" PRIu64 "\n", totDWord);
     uint64_t wrank = 0;
@@ -247,6 +246,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
         assert(h.rank_ == 0);
         h.rank_ = ++wrank;
     }
+    std::free(dictset);
     dfp.close();
     ocfp.close();
     size_t ranknum = 0;
@@ -260,17 +260,15 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     for(const auto &pref: paths) {
         // std::fprintf(stderr, "Opening file at %s\n", (pref + PEXT).data());
         tfp.open((pref + PEXT).data(), "rb");
-        uint64_t nv;
-        tfp.read(nv);
-        std::fprintf(stderr, "First thing from file %s is %" PRIu64". In hash ? %s\n", tfp.path().data(), nv, map->contains_key(nv)?"true":"false");
         for(uint64_t hv, rank;tfp.read(hv) == sizeof(hv); pfp.write(rank)) {
             try {
                 rank = map->operator[](hv).rank_;
 #if MAKE_HISTOGRAM
                 ++ranks[rank];
 #endif
-                std::fprintf(stderr, "rank %" PRIu64 " is item %zu\n", rank, ++ranknum);
+                std::fprintf(stderr, "rank %" PRIu64 " for item %" PRIu64 " is item %zu\n", rank, hv, ++ranknum);
             } catch(const std::out_of_range &ex) {
+                std::fprintf(stderr, "missing item %" PRIu64 " is number %zu\n", hv, ++ranknum);
                 map->for_each([](const auto &x, const auto &y) {
                     std::fprintf(stderr, "%lu is the hash for %s\n", x, y.s_);
                 });
@@ -462,10 +460,14 @@ public:
         //std::fprintf(stderr, "Just hashed string with size %zu '%s'/'%s'with hash %" PRIu64 "\n", cstr_.size(), t.data(), t.data() + 1, hv);
 #endif
         std::fprintf(stderr, "Writing hash value %" PRIu64 " to file at %s with item at %lu offset\n", hv, pafp_.path().data(), static_cast<unsigned long>(pafp_.tell()));
-        if(pafp_.write(hv) != sizeof(hv)) {
+        if(unlikely(pafp_.write(hv) != sizeof(hv))) {
             throw std::runtime_error("ZOMG Failed to write value");
         }
+        std::fprintf(stderr, "About to insert\n");
         map_->insert(hv, cstr_);
+        if(cstr_.size() < 1u + w()) {
+            throw 1;
+        }
         lastfp_.write(cstr_[cstr_.size() - 1 - w()]);
         if(*pos==0) *pos = cstr_.size()-1;
         else       *pos += cstr_.size() - w();
@@ -473,7 +475,7 @@ public:
             safp_.write(*pos);
         cstr_.erase(cstr_.begin(), cstr_.begin() + (cstr_.size() - w()));
 #if !NDEBUG
-        std::fprintf(stderr, "HashPass has had %zu updates.\n", ++updates);
+        ////////////////std::fprintf(stderr, "HashPass has had %zu updates.\n", ++updates);
 #endif
     }
     auto w() const {return h_.n;}
