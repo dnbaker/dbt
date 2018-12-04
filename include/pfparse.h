@@ -18,6 +18,7 @@ struct hit_t {
     const char *s_;
     uint64_t rank_;
     uint32_t  occ_;
+    operator const char *() const {return s_;}
 };
 
 KHASH_MAP_INIT_INT64(m, hit_t)
@@ -51,8 +52,15 @@ public:
         free_values();
         free_map();
     }
+    void print_all() const {
+        this->for_each([](auto x, const hit_t &y) {std::fprintf(stderr, "String %s has hash %lu\n", y.s_, x);});
+    }
+    bool contains_key(uint64_t k) const {return kh_get(m, &map_, k) != kh_end(&map_);}
     // TODO: consider compressing strings by storing in 4-bits per character
     void insert(uint64_t v, const char *s, size_t nelem) {
+#if !NDEBUG
+        print_all();
+#endif
         khiter_t ki = kh_get(m, &map_, v);
         if(ki != kh_end(&map_)) {
             assert(map_.vals[ki].s_);
@@ -245,18 +253,17 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     util::FpWrapper<std::FILE *> pfp;
     pfp.open((std::string(prefix) + PEXT).data(), "wb");
     util::FpWrapper<std::FILE *> tfp;
-    {
-        std::fprintf(stderr, "Paths! %zu of them\n", paths.size());
-        for(const auto &pref: paths)
-            std::fprintf(stderr, "pref is %s\n", pref.data());
-    }
+    std::fprintf(stderr, "Paths! %zu of them\n", paths.size());
 #if MAKE_HISTOGRAM
     std::vector<uint64_t> ranks(map.size() + 1);
 #endif
     for(const auto &pref: paths) {
-        std::fprintf(stderr, "Opening file at %s\n", (pref + PEXT).data());
+        // std::fprintf(stderr, "Opening file at %s\n", (pref + PEXT).data());
         tfp.open((pref + PEXT).data(), "rb");
-        for(uint64_t hv, rank;tfp.read(&hv) == sizeof(hv); pfp.write(rank)) {
+        uint64_t nv;
+        tfp.read(nv);
+        std::fprintf(stderr, "First thing from file %s is %" PRIu64". In hash ? %s\n", tfp.path().data(), nv, map->contains_key(nv)?"true":"false");
+        for(uint64_t hv, rank;tfp.read(hv) == sizeof(hv); pfp.write(rank)) {
             try {
                 rank = map->operator[](hv).rank_;
 #if MAKE_HISTOGRAM
@@ -265,7 +272,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
                 std::fprintf(stderr, "rank %" PRIu64 " is item %zu\n", rank, ++ranknum);
             } catch(const std::out_of_range &ex) {
                 map->for_each([](const auto &x, const auto &y) {
-                    std::fprintf(stderr, "%" PRIu64 " is the hash for %s\n", x, y);
+                    std::fprintf(stderr, "%lu is the hash for %s\n", x, y.s_);
                 });
                 throw;
             }
@@ -309,6 +316,9 @@ private:
     // Prime 1?
 public:
     size_t skip, parse, words;
+#if !NDEBUG
+    size_t updates;
+#endif
     khmap *map_;
 
     template<typename C>
@@ -321,6 +331,9 @@ public:
 
     HashPass(const HashPass &) = delete;
     HashPass(HashPass &&o): h_(std::move(o.h_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)), safp_(std::move(o.safp_)), lastfp_(std::move(o.lastfp_)), pafp_(std::move(o.pafp_)), ifp_(std::move(o.ifp_)), prefix_(o.prefix_), buf_(std::move(o.buf_)), bi_(o.bi_), skip(o.skip), parse(o.parse), words(o.words) {
+#if !NDEBUG
+    updates = 0;
+#endif
     }
 
 
@@ -351,17 +364,14 @@ public:
             if(compression == 0) mode = "wT";
             else mode += std::to_string(compression);
         }
-        std::fprintf(stderr, "About to open sa file at %s\n", safn.data());
         safp_.open(safn.data(), mode.data());
         safn = pref; safn += '.', safn += std::to_string(chunknum);
         safn += ".last";
-        std::fprintf(stderr, "About to open last file at %s\n", safn.data());
         lastfp_.open(safn.data(), mode.data());
         safn = pref;
         safn = safn + '.' + std::to_string(chunknum);
         safn += PEXT;
         pafp_.open(safn.data(), mode.data());
-        std::fprintf(stderr, "Opened parse fp at %s\n", safn.data());
     }
     void open_ifp(const char *path, const char *mode="rb") {
         ifp_.open(path, mode);
@@ -451,7 +461,10 @@ public:
         //std::string t(cstr_.begin(), cstr_.end());
         //std::fprintf(stderr, "Just hashed string with size %zu '%s'/'%s'with hash %" PRIu64 "\n", cstr_.size(), t.data(), t.data() + 1, hv);
 #endif
-        pafp_.write(hv);
+        std::fprintf(stderr, "Writing hash value %" PRIu64 " to file at %s with item at %lu offset\n", hv, pafp_.path().data(), static_cast<unsigned long>(pafp_.tell()));
+        if(pafp_.write(hv) != sizeof(hv)) {
+            throw std::runtime_error("ZOMG Failed to write value");
+        }
         map_->insert(hv, cstr_);
         lastfp_.write(cstr_[cstr_.size() - 1 - w()]);
         if(*pos==0) *pos = cstr_.size()-1;
@@ -459,6 +472,9 @@ public:
         if(safp_.is_open())
             safp_.write(*pos);
         cstr_.erase(cstr_.begin(), cstr_.begin() + (cstr_.size() - w()));
+#if !NDEBUG
+        std::fprintf(stderr, "HashPass has had %zu updates.\n", ++updates);
+#endif
     }
     auto w() const {return h_.n;}
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>

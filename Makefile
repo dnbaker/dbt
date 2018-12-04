@@ -23,7 +23,7 @@ DBG:=
 OS:=$(shell uname)
 FLAGS=
 
-OPT_MINUS_OPENMP= -O3 -funroll-loops\
+OPT_MINUS_OPENMP= -O1 -funroll-loops\
 	  -pipe -fno-strict-aliasing -march=native -mpclmul $(FLAGS) $(EXTRA)
 OPT=$(OPT_MINUS_OPENMP) -fopenmp
 XXFLAGS=-fno-rtti
@@ -55,8 +55,10 @@ d: $(D_EX)
 
 HEADERS=$(wildcard include/*.h)
 
+SANITIZERS=address undefined leak pointer-compare # pointer-substract
+
 %: src/%.cpp $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(DBG) $(INCLUDE) $(LD) $(OBJ) -fsanitize=undefined -fsanitize=leak $< -o $@ $(LIB)
+	$(CXX) $(CXXFLAGS) $(DBG) $(INCLUDE) $(LD) $(OBJ) $(patsubst %,-fsanitize=%,$(SANITIZERS)) $< -o $@ $(LIB)
 clean:
 	rm -f $(EX)
 mostlyclean: clean

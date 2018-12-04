@@ -5,8 +5,12 @@
 #else
 #  include <zlib.h>
 #endif
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <vector>
 #include <sys/stat.h>
 
 namespace fp {
@@ -36,8 +40,8 @@ public:
         return !S_ISFIFO(s.st_mode);
     }
     template<typename T>
-    auto read(T *val) {
-        return this->read(val, sizeof(T));
+    auto read(T &val) {
+        return this->read(std::addressof(val), sizeof(T));
     }
     auto read(void *ptr, size_t nb) {
         if constexpr(is_gz())
@@ -102,6 +106,10 @@ public:
             return gzeof(ptr_);
         else
             std::feof(ptr_);
+    }
+    auto tell() const {
+        if constexpr(is_gz()) return gztell(ptr_);
+        else                  return std::ftell(ptr_);
     }
     ~FpWrapper() {
         if(ptr_) close();
