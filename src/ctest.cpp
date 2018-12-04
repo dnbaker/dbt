@@ -23,6 +23,7 @@ int main(int argc, char *argv[]) {
         h.open_ifp(v.data());
         h.make_map();
         h.fill();
+        //std::fprintf(stderr, h.str().data());
         h.map_->assert_nonnull();
         sans.emplace_back(san);
     }

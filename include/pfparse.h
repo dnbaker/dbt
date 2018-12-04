@@ -97,8 +97,8 @@ public:
     }
     void assert_nonnull() const {
         for_each([](auto k, const hit_t &h) {assert(h.s_);});
-#if !NDEBUG
-        for_each([](auto k, const hit_t &h) {std::fprintf(stderr, "%zu\t%s\n", h.s_ ? size_t(std::strlen(h.s_)): size_t(-1), h.s_);});
+#if 0
+        for_each([](auto k, const hit_t &h) {std::fprintf(stderr, "%zu\t%s\t%zu\n", h.s_ ? size_t(std::strlen(h.s_)): size_t(-1), h.s_);});
 #endif
     }
     hit_t &operator[](uint64_t v) {
@@ -241,10 +241,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     }
     dfp.close();
     ocfp.close();
-    size_t chunknum = 0;
-#if MAKE_HISTOGRAM
-    std::vector<uint64_t> ranks(map.size() + 1);
-#endif
+    size_t ranknum = 0;
     util::FpWrapper<std::FILE *> pfp;
     pfp.open((std::string(prefix) + PEXT).data(), "wb");
     util::FpWrapper<std::FILE *> tfp;
@@ -253,14 +250,25 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
         for(const auto &pref: paths)
             std::fprintf(stderr, "pref is %s\n", pref.data());
     }
-    for(const auto &pref: paths) {
-        tfp.open((pref + PEXT).data(), "rb");
-        for(uint64_t hv;tfp.read(&hv) != sizeof(hv);) {
-            uint64_t rank = map->operator[](hv).rank_;
 #if MAKE_HISTOGRAM
-            ++ranks[rank];
+    std::vector<uint64_t> ranks(map.size() + 1);
 #endif
-            pfp.write(rank);
+    for(const auto &pref: paths) {
+        std::fprintf(stderr, "Opening file at %s\n", (pref + PEXT).data());
+        tfp.open((pref + PEXT).data(), "rb");
+        for(uint64_t hv, rank;tfp.read(&hv) == sizeof(hv); pfp.write(rank)) {
+            try {
+                rank = map->operator[](hv).rank_;
+#if MAKE_HISTOGRAM
+                ++ranks[rank];
+#endif
+                std::fprintf(stderr, "rank %" PRIu64 " is item %zu\n", rank, ++ranknum);
+            } catch(const std::out_of_range &ex) {
+                map->for_each([](const auto &x, const auto &y) {
+                    std::fprintf(stderr, "%" PRIu64 " is the hash for %s\n", x, y);
+                });
+                throw;
+            }
         }
     }
 }
@@ -317,7 +325,17 @@ public:
 
 
     void make_map() {
-        map_ = new khmap();
+        if(!map_) map_ = new khmap();
+    }
+
+    std::string str() const {
+        std::string cs(cstr_.begin(), cstr_.end());
+        std::string qs(q_.begin(), q_.end());
+        char buf[2048];
+        std::sprintf(buf, "HashPass:{[strings: %s|%s][fps: %s|%s|%s|%s][skip|parse|words:%zu|%zu|%zu]}",
+                     cs.data(), qs.data(), safp_.path().data(), lastfp_.path().data(), pafp_.path().data(), ifp_.path().data(),
+                     skip, parse, words);
+        return buf;
     }
 
     ~HashPass() {
@@ -326,7 +344,7 @@ public:
 
     HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref), buf_(1<<14), bi_(buf_.size()), map_(nullptr) {
         std::fprintf(stderr, "Starting hashpass with prefix=%s\n", pref);
-        std::string safn = pref + '.' + std::to_string(chunknum);
+        std::string safn = pref; safn += '.', safn += std::to_string(chunknum);
         safn += ".sa";
         std::string mode = "wb";
         if(safp_.is_gz()) {
@@ -335,13 +353,13 @@ public:
         }
         std::fprintf(stderr, "About to open sa file at %s\n", safn.data());
         safp_.open(safn.data(), mode.data());
-        safn = pref + '.' + std::to_string(chunknum);
+        safn = pref; safn += '.', safn += std::to_string(chunknum);
         safn += ".last";
         std::fprintf(stderr, "About to open last file at %s\n", safn.data());
         lastfp_.open(safn.data(), mode.data());
         safn = pref;
-        safn = pref + '.' + std::to_string(chunknum);
-        safn += ".parse";
+        safn = safn + '.' + std::to_string(chunknum);
+        safn += PEXT;
         pafp_.open(safn.data(), mode.data());
         std::fprintf(stderr, "Opened parse fp at %s\n", safn.data());
     }
@@ -366,6 +384,7 @@ public:
     void fill(size_t nelem=0, size_t start=0) {
         skip = 0, parse = 0, words = 0;
         assert(ifp_.is_open());
+        std::fprintf(stderr, "About to fill from ifp = %s\n", ifp_.path().data());
         if(start) {
             ifp_.seek(start);
             int c;
@@ -387,14 +406,18 @@ public:
             assert(unsigned(w()) == q_.size());
             cstr_ = q_;
         } else cstr_.push_front(util::Dollar);
-        std::fprintf(stderr, "size of cstr: %zu\n", cstr_.size());
+        // std::fprintf(stderr, "size of cstr: %zu\n", cstr_.size());
         uint64_t pos = start;
         if(pos) pos += skip + w();
+#if 0
 #define print_cstr() {\
         std::string tmp(cstr_.begin(), cstr_.end());\
         std::fprintf(stderr, "tmp: %s. tmp.size(): %zu\n", tmp.data() + (start == 0), tmp.size());\
         print_as_values(cstr_);\
     }
+#else
+#define print_cstr()
+#endif
         for(int c; (c = nextchar()) != EOF;) {
             ++parse;
             if(unlikely(q_.size() < unsigned(w()))) {
@@ -410,15 +433,19 @@ public:
                 cstr_.push_back(c);
                 if(h_.hashvalue % WINDOW_MOD == 0) {
                     ++words;
-                    update(pos);
+                    update(&pos);
                     if(nelem && skip + parse == nelem + w()) break;
                 }
             }
         }
         cstr_.insert(cstr_.end(), w(), util::Dollar);
-        update(pos);
+        update(&pos);
+        safp_.close();
+        lastfp_.close();
+        pafp_.close();
+        ifp_.close();
     }
-    void update(uint64_t &pos) {
+    void update(uint64_t *pos) {
         auto hv = h_.hash(cstr_);
 #if !NDEBUG
         //std::string t(cstr_.begin(), cstr_.end());
@@ -427,10 +454,10 @@ public:
         pafp_.write(hv);
         map_->insert(hv, cstr_);
         lastfp_.write(cstr_[cstr_.size() - 1 - w()]);
-        if(pos==0) pos = cstr_.size()-1;
-        else       pos += cstr_.size() - w();
+        if(*pos==0) *pos = cstr_.size()-1;
+        else       *pos += cstr_.size() - w();
         if(safp_.is_open())
-            safp_.write(pos);
+            safp_.write(*pos);
         cstr_.erase(cstr_.begin(), cstr_.begin() + (cstr_.size() - w()));
     }
     auto w() const {return h_.n;}

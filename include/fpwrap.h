@@ -15,12 +15,14 @@ template<typename PointerType>
 class FpWrapper {
     PointerType ptr_;
     std::vector<char> buf_;
+    std::string path_;
 public:
     using type = PointerType;
     FpWrapper(type ptr=nullptr): ptr_(ptr), buf_(BUFSIZ) {}
     FpWrapper(const char *p, const char *m): ptr_(nullptr), buf_(BUFSIZ) {
         this->open(p, m);
     }
+    const std::string &path() const {return path_;}
     static constexpr bool is_gz() {
         return std::is_same_v<PointerType, gzFile>;
     }
@@ -89,6 +91,7 @@ public:
         }
         if(ptr_ == nullptr)
             throw std::runtime_error(std::string("Could not open file at ") + path + " with mode" + mode);
+        if(path) path_ = path;
 #if !NDEBUG
         std::fprintf(stderr, "Opened file at path %s with mode '%s'\n", path, mode);
 #endif
