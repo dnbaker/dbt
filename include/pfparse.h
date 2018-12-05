@@ -10,6 +10,7 @@
 #include "util.h"
 #include "klib/khash.h"
 #include "rollinghashcpp/rabinkarphash.h"
+#include "logutil.h"
 
 namespace dbt {
 
@@ -28,7 +29,7 @@ void print_as_values(const T &cstr_) {
     std::string tmp;
     for(const auto c: cstr_) tmp += std::to_string(int(c)), tmp += ',';
     tmp.back() = '\n';
-    std::fprintf(stderr, "cstr values: %s\n", tmp.data());
+    LOG_DEBUG("cstr values: %s\n", tmp.data());
 }
 
 class khmap {
@@ -53,14 +54,14 @@ public:
         free_map();
     }
     void print_all() const {
-        this->for_each([](auto x, const hit_t &y) {std::fprintf(stderr, "String %s has hash %lu\n", y.s_, x);});
+        this->for_each([](auto x, const hit_t &y) {
+            std::fprintf(stderr, "String %s has hash %lu\n", y.s_, x);
+        });
     }
     bool contains_key(uint64_t k) const {return kh_get(m, &map_, k) != kh_end(&map_);}
     // TODO: consider compressing strings by storing in 4-bits per character
     void insert(uint64_t v, const char *s, size_t nelem) {
-#if !NDEBUG
-        print_all();
-#endif
+        DBG_ONLY(print_all();)
         khiter_t ki = kh_get(m, &map_, v);
         if(ki != kh_end(&map_)) {
             assert(map_.vals[ki].s_);
@@ -210,9 +211,9 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     if(hp.size() == 1) {
         tot = hp[0].parse;
         map->swap(*hp[0].map_);
-        std::fprintf(stderr, "Swapping instead of merging\n");
+        LOG_DEBUG("Swapping instead of merging\n");
     } else {
-        std::fprintf(stderr, "Merging instead of swapping with %zu hps\n", hp.size());
+        LOG_DEBUG("Merging instead of swapping with %zu hps\n", hp.size());
         for(auto &h: hp) {
             if(h.words) {
                 tot += h.parse - (i++ ? h.w(): 0);
@@ -228,7 +229,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     std::sort(dictset, dictset + map->size(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
     std::free(dictset);
     uint64_t totDWord = map->size();
-    std::fprintf(stderr, "totDWord: %" PRIu64 "\n", totDWord);
+    LOG_DEBUG("totDWord: %" PRIu64 "\n", totDWord);
     uint64_t wrank = 0;
     // Write dictionary occurrences
     for(it = dictset; it < dictset + map->size();) {
@@ -254,7 +255,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     util::FpWrapper<std::FILE *> pfp;
     pfp.open((std::string(prefix) + PEXT).data(), "wb");
     util::FpWrapper<std::FILE *> tfp;
-    std::fprintf(stderr, "Paths! %zu of them\n", paths.size());
+    LOG_DEBUG("Paths! %zu of them\n", paths.size());
 #if MAKE_HISTOGRAM
     std::vector<uint64_t> ranks(map.size() + 1);
 #endif
@@ -263,17 +264,17 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
         tfp.open((pref + PEXT).data(), "rb");
         uint64_t nv;
         tfp.read(nv);
-        std::fprintf(stderr, "First thing from file %s is %" PRIu64". In hash ? %s\n", tfp.path().data(), nv, map->contains_key(nv)?"true":"false");
+        LOG_DEBUG("First thing from file %s is %" PRIu64". In hash ? %s\n", tfp.path().data(), nv, map->contains_key(nv)?"true":"false");
         for(uint64_t hv, rank;tfp.read(hv) == sizeof(hv); pfp.write(rank)) {
             try {
                 rank = map->operator[](hv).rank_;
 #if MAKE_HISTOGRAM
                 ++ranks[rank];
 #endif
-                std::fprintf(stderr, "rank %" PRIu64 " is item %zu\n", rank, ++ranknum);
+                LOG_DEBUG("rank %" PRIu64 " is item %zu\n", rank, ++ranknum);
             } catch(const std::out_of_range &ex) {
                 map->for_each([](const auto &x, const auto &y) {
-                    std::fprintf(stderr, "%lu is the hash for %s\n", x, y.s_);
+                    LOG_DEBUG("%lu is the hash for %s\n", x, y.s_);
                 });
                 throw;
             }
@@ -323,7 +324,9 @@ public:
 #if !NDEBUG
     size_t updates;
 #endif
+
     khmap *map_;
+
 
     template<typename C>
     auto hash(const C &c) const {return h_.hash(c);}
@@ -334,8 +337,7 @@ public:
     static constexpr uint64_t WINDOW_MOD  = 100;
 
     HashPass(const HashPass &) = delete;
-    HashPass(HashPass &&o):
-        h_(std::move(o.h_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)),
+    HashPass(HashPass &&o) : h_(std::move(o.h_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)),
         ifp_(std::move(o.ifp_)),
         prefix_(o.prefix_), buf_(std::move(o.buf_)),
         lastcharsvec_(std::move(o.lastcharsvec_)),
@@ -346,11 +348,8 @@ public:
     {
         std::swap(savec_, o.savec_);
         assert(o.savec_ == nullptr);
-#if !NDEBUG
-        updates = 0;
-#endif
+        DBG_ONLY(updates = 0;)
     }
-
 
     void make_map() {
         if(!map_) map_ = new khmap();
@@ -371,13 +370,19 @@ public:
         if(savec_) delete savec_;
     }
 
+    HashPass &operator|=(HashPass &&hp) {
+        throw "a party";
+        HashPass tmp(std::move(hp)); // To drop
+        return *this;
+    }
+
     HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, bool makesa=true, const char *pref="default_prefix", int compression=6):
         h_(wsz), i_(0), prefix_(pref), buf_(1<<14),
         savec_(makesa ? new std::vector<uint64_t>: nullptr),
         bi_(buf_.size()),
         map_(nullptr)
     {
-        std::fprintf(stderr, "Starting hashpass with prefix=%s\n", pref);
+        LOG_DEBUG("Starting hashpass with prefix=%s\n", pref);
         std::string safn = pref; safn += '.', safn += std::to_string(chunknum);
         safn += ".sa";
         std::string mode = "wb";
@@ -385,9 +390,7 @@ public:
             if(compression == 0) mode = "wT";
             else mode += std::to_string(compression);
         }
-#if !NDEBUG
-        updates = 0;
-#endif
+        DBG_ONLY(updates = 0;)
     }
     void open_ifp(const char *path, const char *mode="rb") {
         ifp_.open(path, mode);
@@ -410,19 +413,19 @@ public:
     void fill(size_t nelem=0, size_t start=0) {
         skip = 0, parse = 0, words = 0;
         assert(ifp_.is_open());
-        std::fprintf(stderr, "About to fill from ifp = %s\n", ifp_.path().data());
+        LOG_DEBUG("About to fill from ifp = %s\n", ifp_.path().data());
         if(start) {
             ifp_.seek(start);
             int c;
             for(;(c = nextchar()) != EOF && q_.size() < unsigned(w());q_.push_back(c)) {
                 h_.eat(c);
                 q_.push_back(c);
-                if(++skip == nelem + start) {std::fprintf(stderr, "Warning: sequence too short\n"); return;}
+                if(++skip == nelem + start) {LOG_WARNING("sequence too short\n"); return;}
             }
-            if(q_.size() != unsigned(w())) {std::fprintf(stderr, "Warning: could not fill. Returning early\n"); return;}
+            if(q_.size() != unsigned(w())) {LOG_WARNING("could not fill. Returning early\n"); return;}
             while(skip < unsigned(w()) || h_.hashvalue % WINDOW_MOD) {
-                if((c = nextchar()) == EOF) {std::fprintf(stderr, "Warning: sequence too short2\n"); return;}
-                if(++skip == nelem + start) {std::fprintf(stderr, "Warning: sequence too short3\n"); return;}
+                if((c = nextchar()) == EOF) {LOG_WARNING("sequence too short2\n"); return;}
+                if(++skip == nelem + start) {LOG_WARNING("sequence too short3\n"); return;}
                 h_.update(q_.front(), c);
                 q_.pop_front();
                 q_.push_back(c);
@@ -477,9 +480,7 @@ public:
         else       *pos += cstr_.size() - w();
         if(savec_) savec_->push_back(*pos);
         cstr_.erase(cstr_.begin(), cstr_.begin() + (cstr_.size() - w()));
-#if !NDEBUG
-        std::fprintf(stderr, "HashPass has had %zu updates.\n", ++updates);
-#endif
+        LOG_DEBUG("HashPass has had %zu updates.\n", ++updates);
     }
     auto w() const {return h_.n;}
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
@@ -491,17 +492,6 @@ public:
     size_t memory_usage() {
         return sizeof(*this) + buf_.size() + lastcharsvec_.size() + \
         parsevec_.size() * sizeof(uint64_t) + (savec_ ? sizeof(*savec_) + savec_->size() * sizeof(uint64_t): 0);
-#if 0
-    std::deque<unsigned char> cstr_;
-    std::deque<unsigned char> q_;
-    FType ifp_;
-    const char *prefix_;
-    std::vector<char> buf_;
-    std::vector<char> lastcharsvec_;
-    std::vector<uint64_t> parsevec_;
-    std::vector<uint64_t> *savec_;
-    size_t             bi_;
-#endif
     }
 };
 

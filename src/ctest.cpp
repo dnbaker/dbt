@@ -8,7 +8,7 @@ void usage() {
 }
 
 int main(int argc, char *argv[]) {
-    size_t wsz = 30;
+    size_t wsz = 10;
     std::vector<dbt::HashPass<>> vecs;
     dbt::khmap main_map;
     std::vector<std::string> sans;
