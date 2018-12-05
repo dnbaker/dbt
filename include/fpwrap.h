@@ -69,6 +69,10 @@ public:
         else
             fclose(ptr_);
         ptr_ = nullptr;
+#if !NDEBUG
+        std::fprintf(stderr, "Closed file at %s\n", path_.data());
+#endif
+        path_.clear();
     }
     auto write(const char *s) {return write(s, std::strlen(s));}
     auto write(const void *buf, size_t nelem) {

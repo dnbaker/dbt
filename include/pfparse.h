@@ -98,10 +98,11 @@ public:
         return *this;
     }
     void swap(khmap &m) {
-        char buf[sizeof(m)];
-        std::memcpy(buf, &m, sizeof(m));
-        std::memcpy(&m, this, sizeof(m));
-        std::memcpy(this, buf, sizeof(*this));
+        //char buf[sizeof(m)];
+        std::swap_ranges(reinterpret_cast<uint8_t *>(this), reinterpret_cast<uint8_t *>(this + sizeof(*this)), reinterpret_cast<uint8_t *>(std::addressof(m)));
+        //std::memcpy(buf, &m, sizeof(m));
+        //std::memcpy(&m, this, sizeof(m));
+        //std::memcpy(this, buf, sizeof(*this));
     }
     void assert_nonnull() const {
         for_each([](auto k, const hit_t &h) {assert(h.s_);});
@@ -309,9 +310,12 @@ private:
     uint64_t i_;
     std::deque<unsigned char> cstr_;
     std::deque<unsigned char> q_;
-    FType safp_, lastfp_, pafp_, ifp_;
+    FType ifp_;
     const char *prefix_;
     std::vector<char> buf_;
+    std::vector<char> lastcharsvec_;
+    std::vector<uint64_t> parsevec_;
+    std::vector<uint64_t> *savec_;
     size_t             bi_;
     // Prime 1?
 public:
@@ -324,15 +328,26 @@ public:
     template<typename C>
     auto hash(const C &c) const {return h_.hash(c);}
 
-    static constexpr uint64_t LARGE_PRIME = (1ull << 63) - 1;
+    static constexpr uint64_t LARGE_PRIME = (1ull << 61) - 1;
     static constexpr uint64_t SMALL_PRIME = 109829;
     static constexpr uint64_t MEDIUMPRIME = 1999999973;
     static constexpr uint64_t WINDOW_MOD  = 100;
 
     HashPass(const HashPass &) = delete;
-    HashPass(HashPass &&o): h_(std::move(o.h_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)), safp_(std::move(o.safp_)), lastfp_(std::move(o.lastfp_)), pafp_(std::move(o.pafp_)), ifp_(std::move(o.ifp_)), prefix_(o.prefix_), buf_(std::move(o.buf_)), bi_(o.bi_), skip(o.skip), parse(o.parse), words(o.words) {
+    HashPass(HashPass &&o):
+        h_(std::move(o.h_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)),
+        ifp_(std::move(o.ifp_)),
+        prefix_(o.prefix_), buf_(std::move(o.buf_)),
+        lastcharsvec_(std::move(o.lastcharsvec_)),
+        parsevec_(std::move(o.parsevec_)),
+        savec_(nullptr), 
+        bi_(o.bi_),
+        skip(o.skip), parse(o.parse), words(o.words)
+    {
+        std::swap(savec_, o.savec_);
+        assert(o.savec_ == nullptr);
 #if !NDEBUG
-    updates = 0;
+        updates = 0;
 #endif
     }
 
@@ -345,33 +360,34 @@ public:
         std::string cs(cstr_.begin(), cstr_.end());
         std::string qs(q_.begin(), q_.end());
         char buf[2048];
-        std::sprintf(buf, "HashPass:{[strings: %s|%s][fps: %s|%s|%s|%s][skip|parse|words:%zu|%zu|%zu]}",
-                     cs.data(), qs.data(), safp_.path().data(), lastfp_.path().data(), pafp_.path().data(), ifp_.path().data(),
+        std::sprintf(buf, "HashPass:{[strings: %s|%s][fps: %s|%s][skip|parse|words:%zu|%zu|%zu]}",
+                     cs.data(), qs.data(), ifp_.path(),
                      skip, parse, words);
         return buf;
     }
 
     ~HashPass() {
         if(map_) delete map_;
+        if(savec_) delete savec_;
     }
 
-    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, const char *pref="default_prefix", int compression=6): h_(wsz), i_(0), prefix_(pref), buf_(1<<14), bi_(buf_.size()), map_(nullptr) {
+    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, bool makesa=true, const char *pref="default_prefix", int compression=6):
+        h_(wsz), i_(0), prefix_(pref), buf_(1<<14),
+        savec_(makesa ? new std::vector<uint64_t>: nullptr),
+        bi_(buf_.size()),
+        map_(nullptr)
+    {
         std::fprintf(stderr, "Starting hashpass with prefix=%s\n", pref);
         std::string safn = pref; safn += '.', safn += std::to_string(chunknum);
         safn += ".sa";
         std::string mode = "wb";
-        if(safp_.is_gz()) {
+        if constexpr(FType::is_gz()) {
             if(compression == 0) mode = "wT";
             else mode += std::to_string(compression);
         }
-        safp_.open(safn.data(), mode.data());
-        safn = pref; safn += '.', safn += std::to_string(chunknum);
-        safn += ".last";
-        lastfp_.open(safn.data(), mode.data());
-        safn = pref;
-        safn = safn + '.' + std::to_string(chunknum);
-        safn += PEXT;
-        pafp_.open(safn.data(), mode.data());
+#if !NDEBUG
+        updates = 0;
+#endif
     }
     void open_ifp(const char *path, const char *mode="rb") {
         ifp_.open(path, mode);
@@ -450,27 +466,16 @@ public:
         }
         cstr_.insert(cstr_.end(), w(), util::Dollar);
         update(&pos);
-        safp_.close();
-        lastfp_.close();
-        pafp_.close();
         ifp_.close();
     }
     void update(uint64_t *pos) {
         auto hv = h_.hash(cstr_);
-#if !NDEBUG
-        //std::string t(cstr_.begin(), cstr_.end());
-        //std::fprintf(stderr, "Just hashed string with size %zu '%s'/'%s'with hash %" PRIu64 "\n", cstr_.size(), t.data(), t.data() + 1, hv);
-#endif
-        std::fprintf(stderr, "Writing hash value %" PRIu64 " to file at %s with item at %lu offset\n", hv, pafp_.path().data(), static_cast<unsigned long>(pafp_.tell()));
-        if(pafp_.write(hv) != sizeof(hv)) {
-            throw std::runtime_error("ZOMG Failed to write value");
-        }
+        parsevec_.push_back(hv);
         map_->insert(hv, cstr_);
-        lastfp_.write(cstr_[cstr_.size() - 1 - w()]);
+        lastcharsvec_.push_back(cstr_[cstr_.size() - 1 - w()]);
         if(*pos==0) *pos = cstr_.size()-1;
         else       *pos += cstr_.size() - w();
-        if(safp_.is_open())
-            safp_.write(*pos);
+        if(savec_) savec_->push_back(*pos);
         cstr_.erase(cstr_.begin(), cstr_.begin() + (cstr_.size() - w()));
 #if !NDEBUG
         std::fprintf(stderr, "HashPass has had %zu updates.\n", ++updates);
@@ -483,6 +488,21 @@ public:
     static constexpr auto modmp(T v) {return v & MEDIUMPRIME;}
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
     static constexpr auto modsp(T v) {return v & SMALL_PRIME;}
+    size_t memory_usage() {
+        return sizeof(*this) + buf_.size() + lastcharsvec_.size() + \
+        parsevec_.size() * sizeof(uint64_t) + (savec_ ? sizeof(*savec_) + savec_->size() * sizeof(uint64_t): 0);
+#if 0
+    std::deque<unsigned char> cstr_;
+    std::deque<unsigned char> q_;
+    FType ifp_;
+    const char *prefix_;
+    std::vector<char> buf_;
+    std::vector<char> lastcharsvec_;
+    std::vector<uint64_t> parsevec_;
+    std::vector<uint64_t> *savec_;
+    size_t             bi_;
+#endif
+    }
 };
 
 

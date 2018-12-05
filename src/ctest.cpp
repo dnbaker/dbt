@@ -27,6 +27,5 @@ int main(int argc, char *argv[]) {
         h.map_->assert_nonnull();
         sans.emplace_back(san);
     }
-    std::fprintf(stderr, "Now merging stuff together\n");
-    dbt::merge_hashpasses("master", vecs, sans, &main_map);
+    std::fprintf(stderr, "Now merging stuff together. memory usage: %zu\n", vecs[0].memory_usage());
 }
