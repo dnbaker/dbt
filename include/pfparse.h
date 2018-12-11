@@ -1,19 +1,41 @@
 #ifndef PREFIX_FREE_PARSE_H__
 #define PREFIX_FREE_PARSE_H__
-#include <string>
 #include <algorithm>
-#include <numeric>
-#include <vector>
 #include <cstdio>
 #include <deque>
+#include <functional>
+#include <numeric>
 #include <set>
+#include <string>
+#include <vector>
 #include "util.h"
 #include "klib/khash.h"
 #include "rollinghashcpp/rabinkarphash.h"
 #include "logutil.h"
+template<typename T> class TD;
+
+#ifndef INLINE
+#  if __GNUC__ || __clang__ || INLINE_OVERRIDE
+#    define INLINE __attribute__((always_inline))
+#  else
+#    define INLINE
+#  endif
+#endif
 
 namespace dbt {
 
+#if 1
+namespace {
+template<typename T>
+std::string make_string(const T &x) {
+    auto it = std::begin(x);
+    std::string ret = std::to_string(*it);
+    while(it != std::end(x))
+        ret += ',', ret += std::to_string(*it++);
+    return ret;
+}
+} // anonymous namespace
+#endif
 
 struct hit_t {
     const char *s_;
@@ -35,52 +57,115 @@ void print_as_values(const T &cstr_) {
 class khmap {
     khash_t(m) map_;
 public:
-    khmap() {
-        std::memset(&map_, 0, sizeof(map_));
-    }
+    using value_type     = std::decay_t<decltype(*map_.vals)>;
+    using reference_type = value_type &;
+    using pointer_type   = value_type *;
+    using key_type       = std::decay_t<decltype(*map_.keys)>;
+
+    khmap() {std::memset(this, 0, sizeof(map_));}
     void free_map() {
         std::free(map_.keys);
         std::free(map_.flags);
         std::free(map_.vals);
-        std::memset(&map_, 0, sizeof(map_));
-    }
-    void free_values() {
-        for(khiter_t ki = 0; ki < map_.n_buckets; ++ki)
-            if(kh_exist(&map_, ki))
-                std::free(const_cast<char *>(map_.vals[ki].s_));
+        std::memset(this, 0, sizeof(map_));
     }
     void free() {
         free_values();
         free_map();
     }
+    auto get(uint64_t v) const {
+        return kh_get(m, _h(), v);
+    }
+    auto       &val(uint64_t ki)       {return kh_val(_h(), ki);}
+    const auto &val(uint64_t ki) const {return kh_val(_h(), ki);}
+    key_type key(uint64_t ki) const {return kh_key(_h(), ki);}
+    hit_t &operator[](uint64_t v) {
+#define HIT_CORE\
+        if(auto ki = get(v); unlikely(is_end(v)))\
+            throw std::out_of_range(std::string("Missing key ") + std::to_string(v));\
+        else\
+            return val(ki);
+        HIT_CORE
+    }
+    const hit_t &operator[](uint64_t v) const {
+        HIT_CORE
+#undef HIT_CORE
+    }
+    khmap(const khmap &) = delete;
+    khmap& operator=(const khmap &) = delete;
+    ~khmap() {
+        std::fprintf(stderr, "Destroying khmap at %p\n", this);
+        this->free();
+    }
+    size_t size() const {return kh_size(&map_);}
+    size_t capacity() const {return map_.n_buckets;}
+    bool is_end(khint_t ki) const {return ki == capacity();}
+    bool exist(khint_t ki) const {return kh_exist(_h(), ki);}
     void print_all() const {
-        this->for_each([](auto x, const hit_t &y) {
+        for_each([](auto x, const hit_t &y) {
             std::fprintf(stderr, "String %s has hash %lu\n", y.s_, x);
         });
     }
-    bool contains_key(uint64_t k) const {return kh_get(m, &map_, k) != kh_end(&map_);}
+    size_t memory_usage() const {
+        size_t ret = sizeof(*this) + size() * (sizeof(value_type) + sizeof(key_type)) +
+        __ac_fsize(map_.n_buckets) * sizeof(uint32_t);
+        std::fprintf(stderr, "Base memory; %zu\n", ret);
+        for_each_val([&](const hit_t &h) {std::fprintf(stderr, "h.s: %s/%zu\n", h.s_, std::strlen(h.s_)); ret += std::strlen(h.s_);});
+        // ret += vacc(0, capacity(), size_t(0), [](size_t v, const hit_t &h) {return v + std::strlen(h.s_) + 1;});
+        std::fprintf(stderr, "Full memory; %zu\n", ret);
+        return ret;
+    }
+    template<class T, class GetterFunc, class BinaryOperation=std::plus<T>>
+    T accumulate(khint_t start, khint_t end, T init, 
+                 BinaryOperation op, const GetterFunc &gfunc) const
+    {
+        //end = end ? end: capacity();
+        assert(start < end);
+        while(start < end) {
+            if(exist(start))
+                init = op(std::move(init), gfunc(start++)); // std::move since C++20
+        }
+        return init;
+    }
+    template<class T, class BinaryOperation=std::plus<T>>
+    INLINE T vacc(khint_t start, khint_t end, T init=T(), BinaryOperation op=BinaryOperation{}) const {
+        return accumulate(start, end, init, op, [this](khint_t x) {return val(x);});
+    }
+    template<class T, class BinaryOperation=std::plus<T>>
+    INLINE T kacc(khint_t start, khint_t end, T init=T(), BinaryOperation op=BinaryOperation{}) const {
+        return accumulate(start, end, init, op, [this](khint_t x) {return val(x);});
+    }
+    template<class T, class BinaryOperation=std::plus<T>>
+    INLINE T kvacc(khint_t start, khint_t end, T init, BinaryOperation op) const {
+        return accumulate(start, end, init, op, [this](khint_t x) {return std::make_pair(key(x), std::ref(val(x)));});
+    }
+    auto put(uint64_t k) {
+        int khr;
+        return kh_put(m, _h(), k, &khr);
+    }
+    bool contains_key(uint64_t k) const {return !is_end(get(k));}
     // TODO: consider compressing strings by storing in 4-bits per character
     void insert(uint64_t v, const char *s, size_t nelem) {
         DBG_ONLY(print_all();)
-        khiter_t ki = kh_get(m, &map_, v);
-        if(ki != kh_end(&map_)) {
+        if(auto ki = get(v); !is_end(ki)) {
             assert(map_.vals[ki].s_);
-            if(__builtin_expect(std::strcmp(s, map_.vals[ki].s_), 0))
+            if(unlikely(std::strcmp(s, map_.vals[ki].s_)))
                 throw std::runtime_error("Hash collision. Abort!");
-            if(__builtin_expect(++map_.vals[ki].occ_ == 0, 0))
+            if(unlikely(++map_.vals[ki].occ_ == 0)) // This line both increments and checks! Do not remove.
                 throw std::runtime_error("Overflow in occurrence count");
         } else {
-            int khr;
-            ki = kh_put(m, &map_, v, &khr);
+            std::fprintf(stderr, "String: %s/%zu.\n", s, nelem);
+            ki = put(v);
             char *s2 = static_cast<char *>(std::malloc(nelem + 1));
             if(!s2) throw std::bad_alloc();
             std::memcpy(s2, s, nelem);
             s2[nelem] = '\0';
-            kh_val(&map_, ki) = hit_t{const_cast<const char *>(s2), 0, 1};
+            val(ki) = hit_t{const_cast<const char *>(s2), 0, 1};
             std::set<char> set(s2, s2 + nelem);
             assert(std::accumulate(s2, s2 + nelem, true, [](bool v, const signed char c) -> bool {
-                return v && (c >= 0);
-            }));
+                return v && ((c >= 0) || c == util::Dollar);
+            }) ||
+                  !std::fprintf(stderr, "Contents of set: %s\n", make_string(set).data()));
         }
     }
     const khash_t(m) *map() const {return &map_;}
@@ -91,6 +176,11 @@ public:
         insert(v, t.data(), t.size());
     }
     khmap(khmap &&m) {std::memset(this, 0, sizeof(*this)); *this = std::move(m);}
+    operator       khash_t(m) *()        {return reinterpret_cast<khash_t(m) *>(this);}
+    operator const khash_t(m) *()  const {return reinterpret_cast<const khash_t(m) *>(this);}
+    khash_t(m) *_h() {return reinterpret_cast<khash_t(m) *>(this);}
+    const khash_t(m) *_h() const {return reinterpret_cast<const khash_t(m) *>(this);}
+        
     khmap &operator=(khmap &&m) {
         this->free();
         std::memcpy(this, &m, sizeof(m));
@@ -106,69 +196,55 @@ public:
         //std::memcpy(this, buf, sizeof(*this));
     }
     void assert_nonnull() const {
-        for_each([](auto k, const hit_t &h) {assert(h.s_);});
 #if 0
-        for_each([](auto k, const hit_t &h) {std::fprintf(stderr, "%zu\t%s\t%zu\n", h.s_ ? size_t(std::strlen(h.s_)): size_t(-1), h.s_);});
+        for_each([](auto k, const hit_t &h) {assert(h.s_);});
 #endif
     }
-    hit_t &operator[](uint64_t v) {
-        khiter_t ki = kh_get(m, &map_, v);
-        if(ki == kh_end(&map_)) throw std::out_of_range(std::string("Missing key ") + std::to_string(v));
-        return kh_val(&map_, ki);
+    template<typename Func>
+    void __for_each_range(const Func &func) const {
+        for(khiter_t ki = 0; ki < capacity(); ++ki) if(exist(ki)) func(ki);
     }
-    const hit_t &operator[](uint64_t v) const {
-        khiter_t ki = kh_get(m, &map_, v);
-        if(ki == kh_end(&map_)) throw std::out_of_range(std::string("Missing key ") + std::to_string(v));
-        return kh_val(&map_, ki);
+    template<typename Func>
+    void __for_each_range(const Func &func) {
+        for(khiter_t ki = 0; ki < capacity(); ++ki) if(exist(ki)) func(ki);
     }
-    khmap(const khmap &) = delete;
-    khmap& operator=(const khmap &) = delete;
-    ~khmap() {this->free();}
-    size_t size() const {return kh_size(&map_);}
-    size_t capacity() const {return map_.n_buckets;}
-    bool exist(khint_t ki) const {return kh_exist(&map_, ki);}
+    void free_values() {
+        for_each_val([](hit_t &h) {std::free(const_cast<char *>(h.s_)); h.s_ = nullptr;});
+    }
+    template<typename Func>
+    void __for_each(const Func &func) {
+        for(khiter_t ki = 0; ki < capacity(); ++ki) if(exist(ki)) func(ki);
+    }
+    template<typename Func>
+    void for_each_key(const Func &func) {__for_each_range([&](auto ki) {return func(this->key(ki));});}
+    template<typename Func>
+    void for_each_val(const Func &func) {__for_each_range([&](auto ki) {return func(this->val(ki));});}
+    template<typename Func>
+    void for_each_key(const Func &func) const {__for_each_range([&](auto ki) {return func(this->key(ki));});}
+    template<typename Func>
+    void for_each_val(const Func &func) const {__for_each_range([&](auto ki) {return func(this->val(ki));});}
     template<typename Func>
     void for_each(const Func &func) const {
         for(khiter_t ki = 0; ki < kh_end(&map_); ++ki)
             if(exist(ki))
-                func(kh_key(&map_, ki), kh_val(&map_, ki));
+                func(key(ki), val(ki));
     }
     template<typename Func>
     void for_each(const Func &func) {
         for(khiter_t ki = 0; ki < kh_end(&map_); ++ki)
             if(exist(ki))
-                func(kh_key(&map_, ki), kh_val(&map_, ki));
+                func(key(ki), val(ki));
     }
     khmap &operator|=(const khmap &o) {
         assert_nonnull();
         o.assert_nonnull();
-        o.for_each([&](const auto key, hit_t &h) {
-            khiter_t ki = kh_get(m, &map_, key);
-            if(ki == kh_end(&map_)) {
-                int khr;
-                ki = kh_put(m, &map_, key, &khr);
-                kh_val(&map_, ki) = h;
-                kh_val(&map_, ki).s_ = util::strdup(h.s_);
-            } else kh_val(&map_, ki).occ_ += h.occ_;
+        o.for_each([&](const auto key, const hit_t &h) {
+            if(auto ki = get(key); is_end(ki)) {
+                ki = put(key);
+                val(ki) = h;
+                val(ki).s_ = util::strdup(h.s_);
+            } else val(ki).occ_ += h.occ_;
         });
-#if 0
-        for(size_t i = 0; i < o.map_.n_buckets; ++i) {
-            if(kh_exist(&o.map_, i)) {
-                int khr;
-                khiter_t ki = kh_put(m, &map_, kh_key(&o.map_, i), &khr);
-                if(khr == 0) {
-                    if(std::strcmp(kh_val(&o.map_, i).s_, kh_val(&map_, ki).s_)) throw std::runtime_error("ZOMG");
-                    kh_val(&map_, ki).occ_ += kh_val(&o.map_, i).occ_;
-                } else {
-                    kh_val(&map_, ki) = kh_val(&o.map_, i);
-                    if(kh_val(&map_, ki).s_ == nullptr) {
-                        throw std::runtime_error("This fails to be anything");
-                    }
-                    kh_val(&map_, ki).s_ = util::strdup(kh_val(&map_, ki).s_);
-                }
-            }
-        }
-#endif
         return *this;
     }
 };
@@ -331,7 +407,7 @@ public:
     template<typename C>
     auto hash(const C &c) const {return h_.hash(c);}
 
-    static constexpr uint64_t LARGE_PRIME = (1ull << 61) - 1;
+    static constexpr uint64_t LARGE_PRIME = (1ull << 61);
     static constexpr uint64_t SMALL_PRIME = 109829;
     static constexpr uint64_t MEDIUMPRIME = 1999999973;
     static constexpr uint64_t WINDOW_MOD  = 100;
@@ -348,7 +424,9 @@ public:
     {
         std::swap(savec_, o.savec_);
         assert(o.savec_ == nullptr);
-        DBG_ONLY(updates = 0;)
+#if !NDEBUG
+        updates = 0;
+#endif
     }
 
     void make_map() {
@@ -390,7 +468,9 @@ public:
             if(compression == 0) mode = "wT";
             else mode += std::to_string(compression);
         }
-        DBG_ONLY(updates = 0;)
+#if !NDEBUG
+        updates = 0;
+#endif
     }
     void open_ifp(const char *path, const char *mode="rb") {
         ifp_.open(path, mode);
@@ -489,9 +569,12 @@ public:
     static constexpr auto modmp(T v) {return v & MEDIUMPRIME;}
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
     static constexpr auto modsp(T v) {return v & SMALL_PRIME;}
-    size_t memory_usage() {
-        return sizeof(*this) + buf_.size() + lastcharsvec_.size() + \
-        parsevec_.size() * sizeof(uint64_t) + (savec_ ? sizeof(*savec_) + savec_->size() * sizeof(uint64_t): 0);
+    size_t memory_usage() const {
+        std::fprintf(stderr, "Calling memory_usage\n");
+        return sizeof(*this) + buf_.size() + lastcharsvec_.size() +
+        parsevec_.size() * sizeof(uint64_t) +
+        (savec_ ? sizeof(*savec_) + savec_->size() * sizeof(uint64_t): 0) + sizeof(map_) +
+        (map_ ? map_->memory_usage() : size_t(0));
     }
 };
 
