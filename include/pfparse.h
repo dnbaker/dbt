@@ -10,7 +10,6 @@
 #include <vector>
 #include "util.h"
 #include "klib/khash.h"
-#include "rollinghashcpp/rabinkarphash.h"
 #include "logutil.h"
 template<typename T> class TD;
 
@@ -22,12 +21,13 @@ template<typename T> class TD;
 #  endif
 #endif
 
+#include "include/rabinkarphash.h"
+
 namespace dbt {
 
-#if 1
 namespace {
 template<typename T>
-std::string make_string(const T &x) {
+static std::string stringify(const T &x) {
     auto it = std::begin(x);
     std::string ret = std::to_string(*it);
     while(it != std::end(x))
@@ -35,7 +35,6 @@ std::string make_string(const T &x) {
     return ret;
 }
 } // anonymous namespace
-#endif
 
 struct hit_t {
     const char *s_;
@@ -162,10 +161,12 @@ public:
             s2[nelem] = '\0';
             val(ki) = hit_t{const_cast<const char *>(s2), 0, 1};
             std::set<char> set(s2, s2 + nelem);
+#if 0
             assert(std::accumulate(s2, s2 + nelem, true, [](bool v, const signed char c) -> bool {
                 return v && ((c >= 0) || c == util::Dollar);
             }) ||
-                  !std::fprintf(stderr, "Contents of set: %s\n", make_string(set).data()));
+                  !std::fprintf(stderr, "Contents of set: %s\n", stringify(set).data()));
+#endif
         }
     }
     const khash_t(m) *map() const {return &map_;}
@@ -303,7 +304,6 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
         std::malloc(map->size() * sizeof(const char *))), **it = dictset;
     map->for_each([&](auto k, const auto &h) {assert(h.s_);*it++ = h.s_;});
     std::sort(dictset, dictset + map->size(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
-    std::free(dictset);
     uint64_t totDWord = map->size();
     LOG_DEBUG("totDWord: %" PRIu64 "\n", totDWord);
     uint64_t wrank = 0;
@@ -325,6 +325,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
         assert(h.rank_ == 0);
         h.rank_ = ++wrank;
     }
+    std::free(dictset);
     dfp.close();
     ocfp.close();
     size_t ranknum = 0;
@@ -338,17 +339,15 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
     for(const auto &pref: paths) {
         // std::fprintf(stderr, "Opening file at %s\n", (pref + PEXT).data());
         tfp.open((pref + PEXT).data(), "rb");
-        uint64_t nv;
-        tfp.read(nv);
-        LOG_DEBUG("First thing from file %s is %" PRIu64". In hash ? %s\n", tfp.path().data(), nv, map->contains_key(nv)?"true":"false");
         for(uint64_t hv, rank;tfp.read(hv) == sizeof(hv); pfp.write(rank)) {
             try {
                 rank = map->operator[](hv).rank_;
 #if MAKE_HISTOGRAM
                 ++ranks[rank];
 #endif
-                LOG_DEBUG("rank %" PRIu64 " is item %zu\n", rank, ++ranknum);
+                std::fprintf(stderr, "rank %" PRIu64 " for item %" PRIu64 " is item %zu\n", rank, hv, ++ranknum);
             } catch(const std::out_of_range &ex) {
+                std::fprintf(stderr, "missing item %" PRIu64 " is number %zu\n", hv, ++ranknum);
                 map->for_each([](const auto &x, const auto &y) {
                     LOG_DEBUG("%lu is the hash for %s\n", x, y.s_);
                 });
