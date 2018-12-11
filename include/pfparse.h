@@ -93,7 +93,9 @@ public:
     khmap(const khmap &) = delete;
     khmap& operator=(const khmap &) = delete;
     ~khmap() {
-        std::fprintf(stderr, "Destroying khmap at %p\n", this);
+#if !NDEBUG
+        std::fprintf(stderr, "Destroying khmap at %p\n", static_cast<void *>(this));
+#endif
         this->free();
     }
     size_t size() const {return kh_size(&map_);}

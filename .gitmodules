@@ -4,3 +4,6 @@
 [submodule "rollinghashcpp"]
 	path = rollinghashcpp
 	url = https://github.com/lemire/rollinghashcpp
+[submodule "fpwrap"]
+	path = fpwrap
+	url = https://github.com/dnbaker/fpwrap
