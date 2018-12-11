@@ -145,7 +145,9 @@ public:
     bool contains_key(uint64_t k) const {return !is_end(get(k));}
     // TODO: consider compressing strings by storing in 4-bits per character
     void insert(uint64_t v, const char *s, size_t nelem) {
-        DBG_ONLY(print_all();)
+#if !NDEBUG
+        print_all();
+#endif
         if(auto ki = get(v); !is_end(ki)) {
             assert(map_.vals[ki].s_);
             if(unlikely(std::strcmp(s, map_.vals[ki].s_)))
@@ -153,7 +155,9 @@ public:
             if(unlikely(++map_.vals[ki].occ_ == 0)) // This line both increments and checks! Do not remove.
                 throw std::runtime_error("Overflow in occurrence count");
         } else {
+#if !NDEBUG
             std::fprintf(stderr, "String: %s/%zu.\n", s, nelem);
+#endif
             ki = put(v);
             char *s2 = static_cast<char *>(std::malloc(nelem + 1));
             if(!s2) throw std::bad_alloc();
@@ -345,7 +349,7 @@ void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType
 #if MAKE_HISTOGRAM
                 ++ranks[rank];
 #endif
-                std::fprintf(stderr, "rank %" PRIu64 " for item %" PRIu64 " is item %zu\n", rank, hv, ++ranknum);
+                // std::fprintf(stderr, "rank %" PRIu64 " for item %" PRIu64 " is item %zu\n", rank, hv, ++ranknum);
             } catch(const std::out_of_range &ex) {
                 std::fprintf(stderr, "missing item %" PRIu64 " is number %zu\n", hv, ++ranknum);
                 map->for_each([](const auto &x, const auto &y) {

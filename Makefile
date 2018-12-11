@@ -23,7 +23,7 @@ DBG:=
 OS:=$(shell uname)
 FLAGS=
 
-OPT_MINUS_OPENMP= -O0 \
+OPT_MINUS_OPENMP= -O3 -DNDEBUG \
 	  -pipe -fno-strict-aliasing -march=native $(FLAGS) $(EXTRA)
 OPT=$(OPT_MINUS_OPENMP) -fopenmp
 XXFLAGS=-fno-rtti
