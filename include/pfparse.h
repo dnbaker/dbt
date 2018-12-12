@@ -107,13 +107,11 @@ public:
             std::fprintf(stderr, "String %s has hash %lu\n", y.s_, x);
         });
     }
-    size_t memory_usage() const {
+    size_t memory_usage(bool add_strlens=false) const {
         size_t ret = sizeof(*this) + size() * (sizeof(value_type) + sizeof(key_type)) +
         __ac_fsize(map_.n_buckets) * sizeof(uint32_t);
-        std::fprintf(stderr, "Base memory; %zu\n", ret);
-        for_each_val([&](const hit_t &h) {std::fprintf(stderr, "h.s: %s/%zu\n", h.s_, std::strlen(h.s_)); ret += std::strlen(h.s_);});
-        // ret += vacc(0, capacity(), size_t(0), [](size_t v, const hit_t &h) {return v + std::strlen(h.s_) + 1;});
-        std::fprintf(stderr, "Full memory; %zu\n", ret);
+        if(add_strlens)
+            for_each_val([&](const hit_t &h) {std::fprintf(stderr, "h.s: %s/%zu\n", h.s_, std::strlen(h.s_)); ret += std::strlen(h.s_);});
         return ret;
     }
     template<class T, class GetterFunc, class BinaryOperation=std::plus<T>>
@@ -432,6 +430,7 @@ public:
 #if !NDEBUG
         updates = 0;
 #endif
+        make_map();
     }
 
     void make_map() {
