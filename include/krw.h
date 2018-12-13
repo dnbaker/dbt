@@ -55,7 +55,8 @@ struct KRWindow {
     hash=tot_char=k_=0;
   }
 
-  uint64_t addchar(int c) {
+  uint64_t addchar(int c) {return eat(c);}
+  uint64_t eat(int c) {
     ++tot_char;
     if(++k_ == wsize)
         k_ = 0;

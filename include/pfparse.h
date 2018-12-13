@@ -389,7 +389,6 @@ class HashPass {
     krw::KRWindow krw_;
     uint64_t i_;
     std::deque<unsigned char> cstr_;
-    std::deque<unsigned char> q_;
     FType ifp_;
     const char *prefix_;
     std::vector<char> buf_;
@@ -416,7 +415,7 @@ public:
     static constexpr uint64_t WINDOW_MOD  = 100;
 
     HashPass(const HashPass &) = delete;
-    HashPass(HashPass &&o) : h_(std::move(o.h_)), krw_(std::move(o.krw_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)),
+    HashPass(HashPass &&o) : h_(std::move(o.h_)), krw_(std::move(o.krw_)), cstr_(std::move(o.cstr_)),
         ifp_(std::move(o.ifp_)),
         prefix_(o.prefix_), buf_(std::move(o.buf_)),
         lastcharsvec_(std::move(o.lastcharsvec_)),
@@ -439,10 +438,9 @@ public:
 
     std::string str() const {
         std::string cs(cstr_.begin(), cstr_.end());
-        std::string qs(q_.begin(), q_.end());
         char buf[2048];
-        std::sprintf(buf, "HashPass:{[strings: %s|%s][fps: %s|%s][skip|parse|words:%zu|%zu|%zu]}",
-                     cs.data(), qs.data(), ifp_.path(),
+        std::sprintf(buf, "HashPass:{[strings: %s][fps: %s|%s][skip|parse|words:%zu|%zu|%zu]}",
+                     cs.data(), ifp_.path(),
                      skip, parse, words);
         return buf;
     }
@@ -500,24 +498,20 @@ public:
         if(start) {
             ifp_.seek(start);
             int c;
-            for(;(c = nextchar()) != EOF && q_.size() < unsigned(w());q_.push_back(c)) {
-                h_.eat(c);
-                q_.push_back(c);
+            for(;(c = nextchar()) != EOF && krw_.tot_char < unsigned(w());cstr_.push_back(c)) {
+                krw_.eat(c);
                 if(++skip == nelem + start) {LOG_WARNING("sequence too short\n"); return;}
             }
-            if(q_.size() != unsigned(w())) {LOG_WARNING("could not fill. Returning early\n"); return;}
-            while(skip < unsigned(w()) || h_.hashvalue % WINDOW_MOD) {
+            if(krw_.tot_char != unsigned(w())) {LOG_WARNING("could not fill. Returning early\n"); return;}
+            while(skip < unsigned(w()) || krw_.hash % WINDOW_MOD) {
                 if((c = nextchar()) == EOF) {LOG_WARNING("sequence too short2\n"); return;}
                 if(++skip == nelem + start) {LOG_WARNING("sequence too short3\n"); return;}
-                h_.update(q_.front(), c);
-                q_.pop_front();
-                q_.push_back(c);
+                krw_.eat(c);
             }
             parse = w();
             skip -= w();
-            assert(unsigned(w()) == q_.size());
-            cstr_ = q_;
-        } else cstr_.push_front(util::Dollar);
+            assert(unsigned(w()) == cstr_.size());
+        } else cstr_.push_back(util::Dollar);
         // std::fprintf(stderr, "size of cstr: %zu\n", cstr_.size());
         uint64_t pos = start;
         if(pos) pos += skip + w();
@@ -532,16 +526,13 @@ public:
 #endif
         for(int c; likely((c = nextchar()) != EOF);) {
             ++parse;
-            if(unlikely(q_.size() < unsigned(w()))) {
-                h_.eat(static_cast<unsigned char>(c));
-                q_.push_back(c);
+            if(cstr_.size() < unsigned(w())) {
+                krw_.eat(static_cast<unsigned char>(c));
                 cstr_.push_back(c);
-                print_cstr();
+                // print_cstr();
             } else {
-                assert(q_.size() == unsigned(w()));
-                h_.update(static_cast<unsigned char>(q_.front()), static_cast<unsigned char>(c));
-                q_.pop_front();
-                q_.push_back(c);
+                //assert(cstr_.size() == unsigned(w()));
+                krw_.eat(c);
                 cstr_.push_back(c);
                 if(h_.hashvalue % WINDOW_MOD == 0) {
                     ++words;
