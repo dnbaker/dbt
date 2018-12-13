@@ -498,7 +498,7 @@ public:
         if(start) {
             ifp_.seek(start);
             int c;
-            for(;(c = nextchar()) != EOF && krw_.tot_char < unsigned(w());cstr_.push_back(c)) {
+            for(;(c = nextchar()) != EOF && krw_.k_;cstr_.push_back(c)) {
                 krw_.eat(c);
                 if(++skip == nelem + start) {LOG_WARNING("sequence too short\n"); return;}
             }

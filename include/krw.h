@@ -57,9 +57,8 @@ struct KRWindow {
 
   uint64_t addchar(int c) {return eat(c);}
   uint64_t eat(int c) {
-    ++tot_char;
     if(++k_ == wsize)
-        k_ = 0;
+        k_ = 0, tot_char += k_;
     // complex expression to avoid negative numbers
     hash += (KRW_PRIME - (window[k_]*asize_pot) % KRW_PRIME); // remove window[k] contribution
     window[k_] = c;
@@ -75,6 +74,7 @@ struct KRWindow {
       w.append(1,window[i%wsize]);
     return w;
   }
+  uint64_t total_parsed() const {return k_ + tot_char;}
 
 };
 
