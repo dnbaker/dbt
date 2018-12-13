@@ -11,6 +11,7 @@
 #include "util.h"
 #include "klib/khash.h"
 #include "logutil.h"
+#include "include/krw.h"
 template<typename T> class TD;
 
 #ifndef INLINE
@@ -384,9 +385,8 @@ static constexpr uint8_t printable [] {
 template<typename PointerType>
 class HashPass {
     using FType = util::FpWrapper<PointerType>;
-public:
     Hasher h_;
-private:
+    krw::KRWindow krw_;
     uint64_t i_;
     std::deque<unsigned char> cstr_;
     std::deque<unsigned char> q_;
@@ -416,7 +416,7 @@ public:
     static constexpr uint64_t WINDOW_MOD  = 100;
 
     HashPass(const HashPass &) = delete;
-    HashPass(HashPass &&o) : h_(std::move(o.h_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)),
+    HashPass(HashPass &&o) : h_(std::move(o.h_)), krw_(std::move(o.krw_)), cstr_(std::move(o.cstr_)), q_(std::move(o.q_)),
         ifp_(std::move(o.ifp_)),
         prefix_(o.prefix_), buf_(std::move(o.buf_)),
         lastcharsvec_(std::move(o.lastcharsvec_)),
@@ -459,7 +459,7 @@ public:
     }
 
     HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, bool makesa=true, const char *pref="default_prefix", int compression=6):
-        h_(wsz), i_(0), prefix_(pref), buf_(1<<14),
+        h_(wsz), krw_(wsz), i_(0), prefix_(pref), buf_(1<<14),
         savec_(makesa ? new std::vector<uint64_t>: nullptr),
         bi_(buf_.size()),
         map_(nullptr)
@@ -481,10 +481,9 @@ public:
     }
     int nextchar() {
         if(__builtin_expect(bi_ == buf_.size(), 0)) {
-            size_t n = ifp_.read(buf_.data(), buf_.size());
-            if(!n) return EOF;
-            if(n != buf_.size())
-                buf_.resize(n);
+            int n = ifp_.bulk_read(buf_.data(), buf_.size() * sizeof(buf_[0])); // To omit double buffering.
+            if(n <= 0) return EOF;
+            if(n != static_cast<ssize_t>(buf_.size())) buf_.resize(n);
             bi_ = 0;
         }
         return buf_[bi_++];
@@ -531,7 +530,7 @@ public:
 #else
 #define print_cstr()
 #endif
-        for(int c; (c = nextchar()) != EOF;) {
+        for(int c; likely((c = nextchar()) != EOF);) {
             ++parse;
             if(unlikely(q_.size() < unsigned(w()))) {
                 h_.eat(static_cast<unsigned char>(c));
@@ -574,7 +573,6 @@ public:
     template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
     static constexpr auto modsp(T v) {return v & SMALL_PRIME;}
     size_t memory_usage() const {
-        std::fprintf(stderr, "Calling memory_usage\n");
         return sizeof(*this) + buf_.size() + lastcharsvec_.size() +
         parsevec_.size() * sizeof(uint64_t) +
         (savec_ ? sizeof(*savec_) + savec_->size() * sizeof(uint64_t): 0) + sizeof(map_) +
