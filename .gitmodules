@@ -7,3 +7,9 @@
 [submodule "fpwrap"]
 	path = fpwrap
 	url = https://github.com/dnbaker/fpwrap
+[submodule "zlib"]
+	path = zlib
+	url = https://github.com/madler/zlib
+[submodule "zstd"]
+	path = zstd
+	url = https://github.com/facebook/zstd

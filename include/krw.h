@@ -8,7 +8,6 @@ namespace krw {
 using std::uint8_t;
 using std::uint64_t;
 static constexpr uint64_t KRW_PRIME = 1999999973;
-static constexpr int      KRW_ASIZE = 256;
 static constexpr uint64_t make_asize_pot(int wsz) {
     uint64_t asize_pot = 1;
     for(int i=1;i<wsz;asize_pot <<= 8, asize_pot %= KRW_PRIME, ++i); // ugly linear-time power algorithm, but only done at construction.
@@ -39,10 +38,10 @@ struct KRWindow {
   }
 
   uint8_t       *begin() {
-        return reinterpret_cast<uint8_t *>(window.data());
+      return reinterpret_cast<uint8_t *>(window.data());
   }
   const uint8_t  *begin() const {
-        return reinterpret_cast<const uint8_t *>(window.data());
+      return reinterpret_cast<const uint8_t *>(window.data());
   }
 
   uint8_t       *end()         {return reinterpret_cast<uint8_t *>(window.data() + window.size());}
@@ -62,7 +61,7 @@ struct KRWindow {
     // complex expression to avoid negative numbers
     hash += (KRW_PRIME - (window[k_]*asize_pot) % KRW_PRIME); // remove window[k] contribution
     window[k_] = c;
-    hash = ((hash<<8) | c) % KRW_PRIME;      //  add char i
+    hash <<= 8; hash |= c; hash %= KRW_PRIME;
     // cerr << get_window() << " ~~ " << window << " --> " << hash << endl;
     return hash;
   }

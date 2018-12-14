@@ -141,10 +141,7 @@ static void save_update_word(string& w, unsigned int minsize, khash_t(stats) *fr
       std::memcpy(kh_val(freq, ki).str, w.data(), w.size() + 1);
   }
   else {
-#ifndef NOTHREADS
-      std::lock_guard<std::mutex> lock(map_mutex);
-#endif
-      if(__builtin_expect(++kh_val(freq, ki).occ <= 0, 0)) throw std::runtime_error(std::string("Emergency exit: Maximum number of occurrences ") + std::to_string(MAX_WORD_OCC) + " exceeded.");
+      if(__builtin_expect(__sync_add_and_fetch(&kh_val(freq, ki).occ, 1) <= 0, 0)) throw std::runtime_error(std::string("Emergency exit: Maximum number of occurrences ") + std::to_string(MAX_WORD_OCC) + " exceeded.");
       if(__builtin_expect(std::strcmp(kh_val(freq, ki).str, w.data()), 0)) {
         throw std::runtime_error(std::string("Emergency exit! Hash collision for strings: ") + kh_val(freq, ki).str);
       }

@@ -389,11 +389,9 @@ class HashPass {
     krw::KRWindow krw_;
     uint64_t i_;
     std::deque<unsigned char> cstr_;
-    FType ifp_;
-    const char *prefix_;
-    std::vector<char> buf_;
-    std::vector<char> lastcharsvec_;
-    std::vector<uint64_t> parsevec_;
+    std::vector<char> buf_;          // This is just for buffering input
+    std::vector<char> lastcharsvec_; // This is used to differentiate phrases which are also in $S$
+    std::vector<uint64_t> parsevec_; // This contains hashes, which serve as identifiers for phrases, until they are replaced by their lexicographic rank in the sorted dictionary.
     std::vector<uint64_t> *savec_;
     size_t             bi_;
     // Prime 1?
@@ -402,6 +400,14 @@ public:
 #if !NDEBUG
     size_t updates;
 #endif
+
+
+/* 
+ Merge operation between orderedd subparses consists of:
+    1. Dictionary merge: add counts
+    2. parsevec:         concatenate
+    3. lastchars:        concatenate
+*/
 
     khmap *map_;
 
@@ -416,8 +422,7 @@ public:
 
     HashPass(const HashPass &) = delete;
     HashPass(HashPass &&o) : h_(std::move(o.h_)), krw_(std::move(o.krw_)), cstr_(std::move(o.cstr_)),
-        ifp_(std::move(o.ifp_)),
-        prefix_(o.prefix_), buf_(std::move(o.buf_)),
+        buf_(std::move(o.buf_)),
         lastcharsvec_(std::move(o.lastcharsvec_)),
         parsevec_(std::move(o.parsevec_)),
         savec_(nullptr), 
@@ -439,8 +444,8 @@ public:
     std::string str() const {
         std::string cs(cstr_.begin(), cstr_.end());
         char buf[2048];
-        std::sprintf(buf, "HashPass:{[strings: %s][fps: %s|%s][skip|parse|words:%zu|%zu|%zu]}",
-                     cs.data(), ifp_.path(),
+        std::sprintf(buf, "HashPass:{[strings: %s][skip|parse|words:%zu|%zu|%zu]}",
+                     cs.data(),
                      skip, parse, words);
         return buf;
     }
@@ -456,32 +461,22 @@ public:
         return *this;
     }
 
-    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, bool makesa=true, const char *pref="default_prefix", int compression=6):
-        h_(wsz), krw_(wsz), i_(0), prefix_(pref), buf_(1<<14),
+    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, bool makesa=true,  int compression=6):
+        h_(wsz), krw_(wsz), i_(0), buf_(1<<14),
         savec_(makesa ? new std::vector<uint64_t>: nullptr),
         bi_(buf_.size()),
         map_(nullptr)
     {
         LOG_DEBUG("Starting hashpass with prefix=%s\n", pref);
-        std::string safn = pref; safn += '.', safn += std::to_string(chunknum);
-        safn += ".sa";
-        std::string mode = "wb";
-        if constexpr(FType::is_gz()) {
-            if(compression == 0) mode = "wT";
-            else mode += std::to_string(compression);
-        }
 #if !NDEBUG
         updates = 0;
 #endif
     }
-    void open_ifp(const char *path, const char *mode="rb") {
-        ifp_.open(path, mode);
-    }
-    int nextchar() {
+    int nextchar(FType &ifp) {
         if(__builtin_expect(bi_ == buf_.size(), 0)) {
-            int n = ifp_.bulk_read(buf_.data(), buf_.size() * sizeof(buf_[0])); // To omit double buffering.
+            int n = ifp.bulk_read(buf_.data(), buf_.size() * sizeof(buf_[0])); // To omit double buffering.
             if(n <= 0) return EOF;
-            if(n != static_cast<ssize_t>(buf_.size())) buf_.resize(n);
+            if(n != static_cast<ssize_t>(buf_.size())) buf_.resize(n); // We're at the end,  so just shrink the buffer so that we don't eat garbage.
             bi_ = 0;
         }
         return buf_[bi_++];
@@ -491,20 +486,21 @@ public:
         while((nc = nextchar()) != EOF && (nc = tbl[nc]) != 0);
         return nc;
     }
-    void fill(size_t nelem=0, size_t start=0) {
+    void fill(const char *path, const char *mode="rb", size_t nelem=0, size_t start=0) {
         skip = 0, parse = 0, words = 0;
-        assert(ifp_.is_open());
-        LOG_DEBUG("About to fill from ifp = %s\n", ifp_.path().data());
+        FType ifp;
+        ifp.open(path, mode);
+        LOG_DEBUG("About to fill from ifp = %s\n", ifp.path().data());
         if(start) {
-            ifp_.seek(start);
+            ifp.seek(start);
             int c;
-            for(;(c = nextchar()) != EOF && krw_.k_;cstr_.push_back(c)) {
+            for(;(c = nextchar(ifp)) != EOF && krw_.k_;cstr_.push_back(c)) {
                 krw_.eat(c);
                 if(++skip == nelem + start) {LOG_WARNING("sequence too short\n"); return;}
             }
             if(krw_.tot_char != unsigned(w())) {LOG_WARNING("could not fill. Returning early\n"); return;}
             while(skip < unsigned(w()) || krw_.hash % WINDOW_MOD) {
-                if((c = nextchar()) == EOF) {LOG_WARNING("sequence too short2\n"); return;}
+                if((c = nextchar(ifp)) == EOF) {LOG_WARNING("sequence too short2\n"); return;}
                 if(++skip == nelem + start) {LOG_WARNING("sequence too short3\n"); return;}
                 krw_.eat(c);
             }
@@ -513,23 +509,11 @@ public:
             assert(unsigned(w()) == cstr_.size());
         } else cstr_.push_back(util::Dollar);
         // std::fprintf(stderr, "size of cstr: %zu\n", cstr_.size());
-        uint64_t pos = start;
-        if(pos) pos += skip + w();
-#if 0
-#define print_cstr() {\
-        std::string tmp(cstr_.begin(), cstr_.end());\
-        std::fprintf(stderr, "tmp: %s. tmp.size(): %zu\n", tmp.data() + (start == 0), tmp.size());\
-        print_as_values(cstr_);\
-    }
-#else
-#define print_cstr()
-#endif
-        for(int c; likely((c = nextchar()) != EOF);) {
+        uint64_t pos = start ? start + skip + w(): 0;
+        for(int c; likely((c = nextchar(ifp)) != EOF);) {
             ++parse;
             if(cstr_.size() < unsigned(w())) {
-                krw_.eat(static_cast<unsigned char>(c));
-                cstr_.push_back(c);
-                // print_cstr();
+                krw_.eat(static_cast<unsigned char>(c)), cstr_.push_back(c);
             } else {
                 //assert(cstr_.size() == unsigned(w()));
                 krw_.eat(c);
@@ -543,7 +527,6 @@ public:
         }
         cstr_.insert(cstr_.end(), w(), util::Dollar);
         update(&pos);
-        ifp_.close();
     }
     void update(uint64_t *pos) {
         auto hv = h_.hash(cstr_);

@@ -20,9 +20,8 @@ int main(int argc, char *argv[]) {
         std::fprintf(stderr, "About to create thing at window size %zu with input path %s (v2 data: %s)\n", wsz, v.data(), san.data());
         vecs.emplace_back(wsz, 1, 0, san.data());
         auto &h = vecs.back();
-        h.open_ifp(v.data());
         h.make_map();
-        h.fill();
+        h.fill(v.data());
         //std::fprintf(stderr, h.str().data());
         // h.map_->assert_nonnull();
         sans.emplace_back(san); 
