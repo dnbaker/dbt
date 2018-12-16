@@ -388,6 +388,7 @@ class HashPass {
     Hasher h_;
     krw::KRWindow krw_;
     uint64_t i_;
+    // struct WorkerInfo
     std::deque<unsigned char> cstr_;
     std::vector<char> buf_;          // This is just for buffering input
     std::vector<char> lastcharsvec_; // This is used to differentiate phrases which are also in $S$
@@ -529,7 +530,7 @@ public:
         update(&pos);
     }
     void update(uint64_t *pos) {
-        auto hv = h_.hash(cstr_);
+        auto hv = hash(cstr_);
         parsevec_.push_back(hv);
         map_->insert(hv, cstr_);
         lastcharsvec_.push_back(cstr_[cstr_.size() - 1 - w()]);

@@ -35,7 +35,13 @@ private:
     int n;
 };
 #else
-using mersenneRNG = std::mt19937;
+template<typename IType> struct MersenneWrapper;
+template<> struct MersenneWrapper<uint32_t> {
+    using type = std::mt19937;
+};
+template<> struct MersenneWrapper<uint64_t> {
+    using type = std::mt19937;
+};
 #endif
 
 #ifndef CONSTIF
@@ -57,9 +63,10 @@ hashvaluetype maskfnc(int bits) {
     return x ^ (x - 1);
 }
 
-template <typename hashvaluetype = uint32, typename chartype =  unsigned char, typename RNG=mersenneRNG>
+template <typename hashvaluetype = uint32, typename chartype = unsigned char, typename RNG=typename MersenneWrapper<std::make_unsigned_t<hashvaluetype>>::type>
 class CharacterHash {
 public:
+    using mersenneRNG = RNG;
     CharacterHash(hashvaluetype maxval) {
         mersenneRNG randomgenerator(sizeof(hashvaluetype) == 4 ? maxval: (maxval>>32));
         mersenneRNG randomgeneratorbase(maxval>>32 ? maxval:0xFFFFFFFFU);
