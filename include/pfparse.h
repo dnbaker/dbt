@@ -1,17 +1,22 @@
 #ifndef PREFIX_FREE_PARSE_H__
 #define PREFIX_FREE_PARSE_H__
 #include <algorithm>
+#include <cassert>
 #include <cstdio>
 #include <deque>
 #include <functional>
+#include <cmath>
+#include <memory>
 #include <numeric>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 #include "util.h"
 #include "klib/khash.h"
 #include "logutil.h"
 #include "include/krw.h"
+#include "clhash/include/clhash.h"
 template<typename T> class TD;
 
 #ifndef INLINE
@@ -22,9 +27,9 @@ template<typename T> class TD;
 #  endif
 #endif
 
-#include "include/rabinkarphash.h"
-
 namespace dbt {
+using u64 = uint64_t;
+using u32 = uint32_t;
 
 namespace {
 template<typename T>
@@ -39,7 +44,6 @@ static std::string stringify(const T &x) {
 
 struct hit_t {
     const char *s_;
-    uint64_t rank_;
     uint32_t  occ_;
     operator const char *() const {return s_;}
 };
@@ -54,32 +58,31 @@ void print_as_values(const T &cstr_) {
     LOG_DEBUG("cstr values: %s\n", tmp.data());
 }
 
-class khmap {
-    khash_t(m) map_;
+class khmap: khash_t(m) {
 public:
-    using value_type     = std::decay_t<decltype(*map_.vals)>;
+    using value_type     = hit_t;
     using reference_type = value_type &;
     using pointer_type   = value_type *;
-    using key_type       = std::decay_t<decltype(*map_.keys)>;
+    using key_type       = u64;
 
-    khmap() {std::memset(this, 0, sizeof(map_));}
+    khmap() {std::memset(this, 0, sizeof(*this));}
     void free_map() {
-        std::free(map_.keys);
-        std::free(map_.flags);
-        std::free(map_.vals);
-        std::memset(this, 0, sizeof(map_));
+        std::free(this->keys);
+        std::free(this->flags);
+        std::free(this->vals);
+        std::memset(this, 0, sizeof(*this));
     }
     void free() {
         free_values();
         free_map();
     }
-    auto get(uint64_t v) const {
-        return kh_get(m, _h(), v);
+    auto get(u64 v) const {
+        return kh_get(m, this, v);
     }
-    auto       &val(uint64_t ki)       {return kh_val(_h(), ki);}
-    const auto &val(uint64_t ki) const {return kh_val(_h(), ki);}
-    key_type key(uint64_t ki) const {return kh_key(_h(), ki);}
-    hit_t &operator[](uint64_t v) {
+    auto       &val(u64 ki)       {return kh_val(this, ki);}
+    const auto &val(u64 ki) const {return kh_val(this, ki);}
+    key_type key(u64 ki) const {return kh_key(this, ki);}
+    hit_t &operator[](u64 v) {
 #define HIT_CORE\
         if(auto ki = get(v); unlikely(is_end(v)))\
             throw std::out_of_range(std::string("Missing key ") + std::to_string(v));\
@@ -87,7 +90,7 @@ public:
             return val(ki);
         HIT_CORE
     }
-    const hit_t &operator[](uint64_t v) const {
+    const hit_t &operator[](u64 v) const {
         HIT_CORE
 #undef HIT_CORE
     }
@@ -99,18 +102,18 @@ public:
 #endif
         this->free();
     }
-    size_t size() const {return kh_size(&map_);}
-    size_t capacity() const {return map_.n_buckets;}
+    size_t size() const {return kh_size((khash_t(m) *)this);}
+    size_t capacity() const {return this->n_buckets;}
     bool is_end(khint_t ki) const {return ki == capacity();}
-    bool exist(khint_t ki) const {return kh_exist(_h(), ki);}
+    bool exist(khint_t ki) const {return kh_exist(this, ki);}
     void print_all() const {
         for_each([](auto x, const hit_t &y) {
-            std::fprintf(stderr, "String %s has hash %lu\n", y.s_, x);
+            std::fprintf(stderr, "String %s has hash %" PRIu64 "\n", y.s_, x);
         });
     }
     size_t memory_usage(bool add_strlens=false) const {
         size_t ret = sizeof(*this) + size() * (sizeof(value_type) + sizeof(key_type)) +
-        __ac_fsize(map_.n_buckets) * sizeof(uint32_t);
+        __ac_fsize(this->n_buckets) * sizeof(uint32_t);
         if(add_strlens)
             for_each_val([&](const hit_t &h) {std::fprintf(stderr, "h.s: %s/%zu\n", h.s_, std::strlen(h.s_)); ret += std::strlen(h.s_);});
         return ret;
@@ -139,32 +142,26 @@ public:
     INLINE T kvacc(khint_t start, khint_t end, T init, BinaryOperation op) const {
         return accumulate(start, end, init, op, [this](khint_t x) {return std::make_pair(key(x), std::ref(val(x)));});
     }
-    auto put(uint64_t k) {
+    auto put(u64 k) {
         int khr;
-        return kh_put(m, _h(), k, &khr);
+        return kh_put(m, this, k, &khr);
     }
-    bool contains_key(uint64_t k) const {return !is_end(get(k));}
+    bool contains_key(u64 k) const {return !is_end(get(k));}
     // TODO: consider compressing strings by storing in 4-bits per character
-    void insert(uint64_t v, const char *s, size_t nelem) {
-#if !NDEBUG
-        print_all();
-#endif
+    void insert(u64 v, const char *s, size_t nelem) {
         if(auto ki = get(v); !is_end(ki)) {
-            assert(map_.vals[ki].s_);
-            if(unlikely(std::strcmp(s, map_.vals[ki].s_)))
+            assert(this->vals[ki].s_);
+            if(unlikely(std::strcmp(s, this->vals[ki].s_)))
                 throw std::runtime_error("Hash collision. Abort!");
-            if(unlikely(++map_.vals[ki].occ_ == 0)) // This line both increments and checks! Do not remove.
+            if(unlikely(++this->vals[ki].occ_ == 0)) // This line both increments and checks! Do not remove.
                 throw std::runtime_error("Overflow in occurrence count");
         } else {
-#if !NDEBUG
-            std::fprintf(stderr, "String: %s/%zu.\n", s, nelem);
-#endif
             ki = put(v);
             char *s2 = static_cast<char *>(std::malloc(nelem + 1));
             if(!s2) throw std::bad_alloc();
             std::memcpy(s2, s, nelem);
             s2[nelem] = '\0';
-            val(ki) = hit_t{const_cast<const char *>(s2), 0, 1};
+            val(ki) = hit_t{const_cast<const char *>(s2), 1};
             std::set<char> set(s2, s2 + nelem);
 #if 0
             assert(std::accumulate(s2, s2 + nelem, true, [](bool v, const signed char c) -> bool {
@@ -174,24 +171,21 @@ public:
 #endif
         }
     }
-    const khash_t(m) *map() const {return &map_;}
-    void insert(uint64_t v, const char *s) {insert(v, s, std::strlen(s));}
+    const khash_t(m) *map() const {return this;}
+    void insert(u64 v, const char *s) {insert(v, s, std::strlen(s));}
     template<typename T>
-    void insert(uint64_t v, const T &s) {
+    void insert(u64 v, const T &s) {
         std::string t(s.begin(), s.end());
         insert(v, t.data(), t.size());
     }
     khmap(khmap &&m) {std::memset(this, 0, sizeof(*this)); *this = std::move(m);}
     operator       khash_t(m) *()        {return reinterpret_cast<khash_t(m) *>(this);}
     operator const khash_t(m) *()  const {return reinterpret_cast<const khash_t(m) *>(this);}
-    khash_t(m) *_h() {return reinterpret_cast<khash_t(m) *>(this);}
-    const khash_t(m) *_h() const {return reinterpret_cast<const khash_t(m) *>(this);}
         
     khmap &operator=(khmap &&m) {
         this->free();
         std::memcpy(this, &m, sizeof(m));
-        m.map_ = khash_t(m){0,0,0,0,0,0,0};
-        //std::memset(&m, 0, sizeof(m));
+        std::memset(&m, 0, sizeof(m));
         return *this;
     }
     void swap(khmap &m) {
@@ -231,13 +225,13 @@ public:
     void for_each_val(const Func &func) const {__for_each_range([&](auto ki) {return func(this->val(ki));});}
     template<typename Func>
     void for_each(const Func &func) const {
-        for(khiter_t ki = 0; ki < kh_end(&map_); ++ki)
+        for(khiter_t ki = 0; ki < kh_end(this); ++ki)
             if(exist(ki))
                 func(key(ki), val(ki));
     }
     template<typename Func>
     void for_each(const Func &func) {
-        for(khiter_t ki = 0; ki < kh_end(&map_); ++ki)
+        for(khiter_t ki = 0; ki < kh_end(this); ++ki)
             if(exist(ki))
                 func(key(ki), val(ki));
     }
@@ -256,112 +250,7 @@ public:
 };
 
 
-using Hasher = KarpRabinHashBits<uint64_t>;
-
-const std::string DEXT    = ".dict";
-const std::string PEXT    = ".parse";
-const std::string OCCEXT  = ".occ";
-
-template<typename PointerType=std::FILE*> class HashPass;
-
-template<typename PointerType=std::FILE*>
-void merge_hashpasses(const char *prefix, const std::vector<HashPass<PointerType>> &hp, const std::vector<std::string> &paths, khmap *map) {
-/*
-    When this completes, we have a dictionary, occurrence, and a parse file.
-    The suffix array pieces have been generated for each subset, but not yet concatenated.
-    This is for merging of multiple efforts on a single genome.
-
-    dictionary: .dict
-    occ:        .occ
-    parse:      .parse
-    sa (unmerged) .<int>.sa // Can be concatenated
-    tot:       (in memory)  // Total number of characters in input, minus the w extra
-
-    Merging multiples of these will essentially require:
-        1. Getting lengths of full corpora (value of 'tot' here)
-        2. Assigning indexes to each genome and offsets to increment by
-        3. Incrementing all position information by each respective offset to get to the global index
-        4. Doing this for the sa files before concatenating
- */
-    assert(map);
-    size_t tot = 0, i = 0;
-
-    std::string dictpath = prefix; dictpath += DEXT;
-    std::string occpath = prefix; occpath   += OCCEXT;
-    util::FpWrapper<PointerType> dfp(dictpath.data(), "wb");
-    util::FpWrapper<PointerType> ocfp(occpath.data(), "wb");
-    if(hp.size() == 1) {
-        tot = hp[0].parse;
-        map->swap(*hp[0].map_);
-        LOG_DEBUG("Swapping instead of merging\n");
-    } else {
-        LOG_DEBUG("Merging instead of swapping with %zu hps\n", hp.size());
-        for(auto &h: hp) {
-            if(h.words) {
-                tot += h.parse - (i++ ? h.w(): 0);
-            }
-            *map |= *h.map_;
-            //h.map_->free();
-            // Can these resources be freed now?
-        }
-    }
-    const char **dictset = static_cast<const char **>(
-        std::malloc(map->size() * sizeof(const char *))), **it = dictset;
-    map->for_each([&](auto k, const auto &h) {assert(h.s_);*it++ = h.s_;});
-    std::sort(dictset, dictset + map->size(), [](const char *a, const char *b) {return std::strcmp(a, b) < 0;});
-    uint64_t totDWord = map->size();
-    LOG_DEBUG("totDWord: %" PRIu64 "\n", totDWord);
-    uint64_t wrank = 0;
-    // Write dictionary occurrences
-    for(it = dictset; it < dictset + map->size();) {
-        const char *c = *it++;
-        size_t sl = std::strlen(c), s = dfp.write(c);
-        auto hv = hp[0].hash(c);
-        //std::fprintf(stderr, "string %s/%zu has has %" PRIu64 " hash value\n", c, sl, hv);
-        if(s != sl) {
-            char buf[256];
-            std::sprintf(buf, "Could not write to dict file. string: %s s: %zu. sl: %zu", c, s, sl);
-            throw std::runtime_error(buf);
-        }
-        dfp.write(util::EndOfWord);
-        hit_t &h = map->operator[](hv);
-        assert(h.occ_);
-        ocfp.write(h.occ_);
-        assert(h.rank_ == 0);
-        h.rank_ = ++wrank;
-    }
-    std::free(dictset);
-    dfp.close();
-    ocfp.close();
-    size_t ranknum = 0;
-    util::FpWrapper<std::FILE *> pfp;
-    pfp.open((std::string(prefix) + PEXT).data(), "wb");
-    util::FpWrapper<std::FILE *> tfp;
-    LOG_DEBUG("Paths! %zu of them\n", paths.size());
-#if MAKE_HISTOGRAM
-    std::vector<uint64_t> ranks(map.size() + 1);
-#endif
-    for(const auto &pref: paths) {
-        // std::fprintf(stderr, "Opening file at %s\n", (pref + PEXT).data());
-        tfp.open((pref + PEXT).data(), "rb");
-        for(uint64_t hv, rank;tfp.read(hv) == sizeof(hv); pfp.write(rank)) {
-            try {
-                rank = map->operator[](hv).rank_;
-#if MAKE_HISTOGRAM
-                ++ranks[rank];
-#endif
-                // std::fprintf(stderr, "rank %" PRIu64 " for item %" PRIu64 " is item %zu\n", rank, hv, ++ranknum);
-            } catch(const std::out_of_range &ex) {
-                std::fprintf(stderr, "missing item %" PRIu64 " is number %zu\n", hv, ++ranknum);
-                map->for_each([](const auto &x, const auto &y) {
-                    LOG_DEBUG("%lu is the hash for %s\n", x, y.s_);
-                });
-                throw;
-            }
-        }
-    }
-}
-
+template<typename, typename> class HashPasser;
 
 
 namespace lut {
@@ -382,177 +271,189 @@ static constexpr uint8_t printable [] {
 
 } // namespace lut
 
-template<typename PointerType>
-class HashPass {
-    using FType = util::FpWrapper<PointerType>;
-    Hasher h_;
-    krw::KRWindow krw_;
-    uint64_t i_;
-    // struct WorkerInfo
-    std::deque<unsigned char> cstr_;
-    std::vector<char> buf_;          // This is just for buffering input
-    std::vector<char> lastcharsvec_; // This is used to differentiate phrases which are also in $S$
-    std::vector<uint64_t> parsevec_; // This contains hashes, which serve as identifiers for phrases, until they are replaced by their lexicographic rank in the sorted dictionary.
-    std::vector<uint64_t> *savec_;
-    size_t             bi_;
-    // Prime 1?
-public:
-    size_t skip, parse, words;
-#if !NDEBUG
-    size_t updates;
-#endif
+namespace constants {
+    static constexpr u64 LARGE_PRIME = (1ull << 61);
+    static constexpr u64 SMALL_PRIME = 109829;
+    static constexpr u64 MEDIUMPRIME = 1999999973;
+    static constexpr u64 WINDOW_MOD  = 100;
+}
 
-
-/* 
- Merge operation between orderedd subparses consists of:
-    1. Dictionary merge: add counts
-    2. parsevec:         concatenate
-    3. lastchars:        concatenate
-*/
-
-    khmap *map_;
-
-
-    template<typename C>
-    auto hash(const C &c) const {return h_.hash(c);}
-
-    static constexpr uint64_t LARGE_PRIME = (1ull << 61);
-    static constexpr uint64_t SMALL_PRIME = 109829;
-    static constexpr uint64_t MEDIUMPRIME = 1999999973;
-    static constexpr uint64_t WINDOW_MOD  = 100;
-
-    HashPass(const HashPass &) = delete;
-    HashPass(HashPass &&o) : h_(std::move(o.h_)), krw_(std::move(o.krw_)), cstr_(std::move(o.cstr_)),
-        buf_(std::move(o.buf_)),
-        lastcharsvec_(std::move(o.lastcharsvec_)),
-        parsevec_(std::move(o.parsevec_)),
-        savec_(nullptr), 
-        bi_(o.bi_),
-        skip(o.skip), parse(o.parse), words(o.words)
-    {
-        std::swap(savec_, o.savec_);
-        assert(o.savec_ == nullptr);
-#if !NDEBUG
-        updates = 0;
-#endif
-        make_map();
+struct ResultSet {
+    std::vector<char> lastcs_; // This is used to differentiate phrases which are also in $S$
+    std::vector<u64>  parses_; // This contains hashes, which serve as identifiers for phrases, until they are replaced by their lexicographic rank in the sorted dictionary.
+    std::unique_ptr<std::vector<u64>> sa_;
+    khmap                    map_;
+    size_t                 words_;
+    size_t                parsed_;
+    size_t               skipped_;
+    unsigned                  id_; // Integral value reflecting which result subsection it is.
+    u64 start_, stop_;
+    ResultSet(u32 id, bool savec=false, u64 start=0, u64 stop=0): sa_(savec ? new std::vector<u64>: nullptr), words_(0), parsed_(0), skipped_(0), id_(id), start_(start), stop_(stop) {
+        reserve_all(stop_ - start_);
     }
-
-    void make_map() {
-        if(!map_) map_ = new khmap();
+    ResultSet(ResultSet &&) = default;
+    void reserve_all(size_t size) {
+        lastcs_.reserve(size); parses_.reserve(size); if(sa_) sa_->reserve(size);
     }
-
-    std::string str() const {
-        std::string cs(cstr_.begin(), cstr_.end());
-        char buf[2048];
-        std::sprintf(buf, "HashPass:{[strings: %s][skip|parse|words:%zu|%zu|%zu]}",
-                     cs.data(),
-                     skip, parse, words);
-        return buf;
+    void make_empty() {
+#define DEL(x) decltype(x)().swap(x);
+        DEL(lastcs_);
+        DEL(parses_);
+        sa_.release();
+        kh_destroy(m, map_);
+        // words_ = parsed_ = skipped_ = 0;
     }
+    ResultSet &merge_and_destroy(ResultSet &o) {
+        if(o.id_ < id_) throw std::runtime_error("Attempting to merge results out of order. Abort!\n");
+        if(!sa_ != !o.sa_) throw std::runtime_error("ResultSets being merged where presence or absence of suffix array sampling do not agree.");
+        lastcs_.insert(lastcs_.end(), o.lastcs_.begin(), o.lastcs_.end());
+        parses_.insert(parses_.end(), o.parses_.begin(), o.parses_.end());
+        sa_->insert(sa_->end(), o.sa_->begin(), o.sa_->end());
+        parsed_ += o.parsed_;
+        words_ += o.words_;
+        skipped_ += o.skipped_;
 
-    ~HashPass() {
-        if(map_) delete map_;
-        if(savec_) delete savec_;
-    }
-
-    HashPass &operator|=(HashPass &&hp) {
-        throw "a party";
-        HashPass tmp(std::move(hp)); // To drop
+        if(map_.size() > o.map_.size()) // Merge into the larger map.
+            std::swap_ranges((uint8_t *)&map_, (uint8_t *)&o.map_,  (uint8_t *)&o.map_ + sizeof(o.map_));
+        o.map_.for_each([&](uint64_t k, hit_t &h) {
+            if(auto ki = map_.get(k); !map_.is_end(ki)) {
+                map_.val(ki).occ_ += h.occ_;
+                std::free(const_cast<char *>(h.s_));
+            } else {
+                map_.val(ki) = h;
+            }
+        });
+        o.make_empty();
         return *this;
     }
+};
 
-    HashPass(unsigned wsz, size_t nchunks=1, size_t chunknum=0, bool makesa=true,  int compression=6):
-        h_(wsz), krw_(wsz), i_(0), buf_(1<<14),
-        savec_(makesa ? new std::vector<uint64_t>: nullptr),
-        bi_(buf_.size()),
-        map_(nullptr)
+using ustring = std::basic_string<unsigned char>;
+
+template<typename PType>
+static inline INLINE int nextchar(util::FpWrapper<PType> &ifp, size_t &bi, std::vector<char> &buf) {
+    if(__builtin_expect(bi == buf.size(), 0)) {
+        int n = ifp.bulk_read(buf.data(), buf.size()); /* To omit double buffering. */
+        if(n <= 0) return EOF;
+        if(n != static_cast<ssize_t>(buf.size())) buf.resize(n); // We're at the end,  so just shrink the buffer so that we don't eat garbage.
+        bi = 0;
+    }
+    return buf[bi++];
+}
+
+namespace detail {
+template<typename Hasher>
+void update(ResultSet &rs, u64 *pos, ustring &cstr, const Hasher &h, u32 wsz) {
+    auto hv = h.operator ()(cstr);
+    rs.parses_.push_back(hv);
+    rs.map_.insert(hv, cstr);
+    rs.lastcs_.push_back(cstr[cstr.size() - 1 - wsz]);
+    if(*pos==0) *pos = cstr.size()-1;
+    else       *pos += cstr.size() - wsz;
+    if(rs.sa_) rs.sa_->push_back(*pos);
+    cstr.erase(cstr.begin(), cstr.begin() + (cstr.size() - wsz));
+}
+}
+
+/*
+ Set 'nelem' to 0 to process a full file.
+ */
+template<typename Hasher=clhasher, typename PointerType=std::FILE *>
+void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *path) {
+    ustring cstr;
+    krw::KRWindow krw(wsz);
+    std::vector<char> buf(1 << 14);
+    size_t bi = 0;
+    util::FpWrapper<PointerType> ifp;
+    ifp.open(path, "rb");
+    rs.skipped_ = rs.parsed_ = rs.words_ = 0;
+    u64 start = rs.start_, nelem = rs.stop_ - rs.start_;
+    LOG_DEBUG("About to fill from ifp = %s, with %zu/%zu\n", path, start, nelem);
+    if(start) {
+        ifp.seek(start);
+        int c;
+        for(;(c = nextchar(ifp, bi, buf)) != EOF && krw.k_;cstr.push_back(c)) {
+            krw.eat(c);
+            if(++rs.skipped_ == nelem + start) {LOG_WARNING("sequence too short\n"); return;}
+        }
+        if(krw.tot_char != wsz) {LOG_WARNING("could not fill. Returning early\n"); return;}
+        while(rs.skipped_ < wsz || krw.hash % constants::WINDOW_MOD) {
+            if((c = nextchar(ifp, bi, buf)) == EOF) {LOG_WARNING("sequence too short2\n"); return;}
+            if(++rs.skipped_ == nelem + start) {LOG_WARNING("sequence too short3\n"); return;}
+            krw.eat(c);
+        }
+        rs.parsed_ = wsz;
+        rs.skipped_ -= wsz;
+        assert(wsz == cstr.size());
+    } else cstr.push_back(util::Dollar);
+    u64 pos = start ? start + rs.skipped_ + wsz: 0;
+    using detail::update;
+    for(int c; likely((c = nextchar(ifp, bi, buf)) != EOF);) {
+        ++rs.parsed_;
+        if(cstr.size() >= wsz) {
+            krw.eat(c);
+            cstr.push_back(c);
+            if(krw.hash % constants::WINDOW_MOD == 0) {
+                ++rs.words_;
+                update(rs, &pos, cstr, hasher, wsz);
+                if(nelem && rs.skipped_ + rs.parsed_ == nelem + wsz) break;
+            }
+        } else krw.eat(static_cast<unsigned char>(c)), cstr.push_back(c);
+    }
+    cstr.insert(cstr.end(), wsz, util::Dollar);
+    update(rs, &pos, cstr, hasher, wsz);
+}
+
+template<typename PointerType=std::FILE *, typename Hasher=clhasher>
+class HashPasser {
+    using FType = util::FpWrapper<PointerType>;
+    u32 wsz_;
+    Hasher h_;
+    std::vector<ResultSet> results_;
+    std::string path_;
+public:
+
+    ResultSet *final_rb_;
+
+
+    HashPasser(const char *path, unsigned wsz=10, int nthreads=0, bool makesa=true):
+        wsz_(wsz), path_(path),
+        final_rb_(nullptr) // For final, collapsed map.
     {
-        LOG_DEBUG("Starting hashpass with prefix=%s\n", pref);
-#if !NDEBUG
-        updates = 0;
-#endif
-    }
-    int nextchar(FType &ifp) {
-        if(__builtin_expect(bi_ == buf_.size(), 0)) {
-            int n = ifp.bulk_read(buf_.data(), buf_.size() * sizeof(buf_[0])); // To omit double buffering.
-            if(n <= 0) return EOF;
-            if(n != static_cast<ssize_t>(buf_.size())) buf_.resize(n); // We're at the end,  so just shrink the buffer so that we don't eat garbage.
-            bi_ = 0;
+        if(nthreads < 1)
+            nthreads = std::thread::hardware_concurrency(); // I want all cores and threads you have.
+        results_.reserve(nthreads);
+        const size_t fsz = util::get_fsz<PointerType>(path), per_chunk = std::ceil(double(fsz) / nthreads);
+        size_t start = 0, stop;
+        while(results_.size() < unsigned(nthreads)) {
+            stop = std::min(fsz, start + per_chunk);
+            results_.emplace_back(results_.size(), makesa, start, stop);
+            start = stop;
         }
-        return buf_[bi_++];
+        run();
     }
-    int filternextchar(uint8_t *tbl=lut::printable) {
-        int nc;
-        while((nc = nextchar()) != EOF && (nc = tbl[nc]) != 0);
-        return nc;
-    }
-    void fill(const char *path, const char *mode="rb", size_t nelem=0, size_t start=0) {
-        skip = 0, parse = 0, words = 0;
-        FType ifp;
-        ifp.open(path, mode);
-        LOG_DEBUG("About to fill from ifp = %s\n", ifp.path().data());
-        if(start) {
-            ifp.seek(start);
-            int c;
-            for(;(c = nextchar(ifp)) != EOF && krw_.k_;cstr_.push_back(c)) {
-                krw_.eat(c);
-                if(++skip == nelem + start) {LOG_WARNING("sequence too short\n"); return;}
-            }
-            if(krw_.tot_char != unsigned(w())) {LOG_WARNING("could not fill. Returning early\n"); return;}
-            while(skip < unsigned(w()) || krw_.hash % WINDOW_MOD) {
-                if((c = nextchar(ifp)) == EOF) {LOG_WARNING("sequence too short2\n"); return;}
-                if(++skip == nelem + start) {LOG_WARNING("sequence too short3\n"); return;}
-                krw_.eat(c);
-            }
-            parse = w();
-            skip -= w();
-            assert(unsigned(w()) == cstr_.size());
-        } else cstr_.push_back(util::Dollar);
-        // std::fprintf(stderr, "size of cstr: %zu\n", cstr_.size());
-        uint64_t pos = start ? start + skip + w(): 0;
-        for(int c; likely((c = nextchar(ifp)) != EOF);) {
-            ++parse;
-            if(cstr_.size() < unsigned(w())) {
-                krw_.eat(static_cast<unsigned char>(c)), cstr_.push_back(c);
-            } else {
-                //assert(cstr_.size() == unsigned(w()));
-                krw_.eat(c);
-                cstr_.push_back(c);
-                if(h_.hashvalue % WINDOW_MOD == 0) {
-                    ++words;
-                    update(&pos);
-                    if(nelem && skip + parse == nelem + w()) break;
-                }
-            }
+    void run() {
+        #pragma omp parallel
+        for(size_t i = 0; i < results_.size(); ++i) {
+            perform_subwork(results_[i], h_, wsz_, path_.data());
         }
-        cstr_.insert(cstr_.end(), w(), util::Dollar);
-        update(&pos);
+        final_rb_ = static_cast<ResultSet *>(std::malloc(sizeof(ResultSet)));
+        std::memcpy(final_rb_, results_.data(), sizeof(*final_rb_));
+        std::memset(results_.data(), 0, sizeof(*final_rb_));
+        if(results_.size() == 1) return;
+        // TODO: improve the 'reduce' portion of this.
+        // It really should be done in parallel in a divide and conquer tree of logarithmic depth.
+        for(size_t i = 1; i < results_.size(); ++i)
+            final_rb_->merge_and_destroy(results_[i]);
     }
-    void update(uint64_t *pos) {
-        auto hv = hash(cstr_);
-        parsevec_.push_back(hv);
-        map_->insert(hv, cstr_);
-        lastcharsvec_.push_back(cstr_[cstr_.size() - 1 - w()]);
-        if(*pos==0) *pos = cstr_.size()-1;
-        else       *pos += cstr_.size() - w();
-        if(savec_) savec_->push_back(*pos);
-        cstr_.erase(cstr_.begin(), cstr_.begin() + (cstr_.size() - w()));
-        LOG_DEBUG("HashPass has had %zu updates.\n", ++updates);
+    HashPasser(HashPasser &o): h_(std::move(o.h_)), results_(std::move(o.results_)), final_rb_(o.final_rb_) {o.final_rb_ = nullptr;}
+    HashPasser(const HashPasser &) = delete;
+
+    ~HashPasser() {
+        if(final_rb_) final_rb_->~ResultSet(), std::free(final_rb_);
     }
+
     auto w() const {return h_.n;}
-    template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
-    static constexpr auto modlp(T v) {return v & LARGE_PRIME;}
-    template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
-    static constexpr auto modmp(T v) {return v & MEDIUMPRIME;}
-    template<typename T, typename=std::enable_if_t<std::is_integral_v<T>>>
-    static constexpr auto modsp(T v) {return v & SMALL_PRIME;}
-    size_t memory_usage() const {
-        return sizeof(*this) + buf_.size() + lastcharsvec_.size() +
-        parsevec_.size() * sizeof(uint64_t) +
-        (savec_ ? sizeof(*savec_) + savec_->size() * sizeof(uint64_t): 0) + sizeof(map_) +
-        (map_ ? map_->memory_usage() : size_t(0));
-    }
 };
 
 

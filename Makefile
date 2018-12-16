@@ -8,7 +8,7 @@ CLHASH_CHECKOUT = "&& git checkout master"
 WARNINGS=-Wall -Wextra -Wno-char-subscripts \
 		 -Wpointer-arith -Wwrite-strings -Wdisabled-optimization \
 		 -Wformat -Wcast-align -Wno-unused-function -Wno-unused-parameter \
-		 -pedantic -Wunused-variable
+		 -pedantic -Wunused-variable -Wno-class-memaccess
 
 ifndef EXTRA
 	EXTRA:=
@@ -55,10 +55,13 @@ d: $(D_EX)
 
 HEADERS=$(wildcard include/*.h)
 
+clhash.o:
+	cd clhash && make $@ && cp $@ ..
+
 SANITIZERS=# address undefined leak # pointer-compare # pointer-substract
 
-%: src/%.cpp $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(DBG) $(INCLUDE) $(LD) $(OBJ) $(patsubst %,-fsanitize=%,$(SANITIZERS)) $< -o $@ $(LIB)
+%: src/%.cpp $(HEADERS) clhash.o
+	$(CXX) $(CXXFLAGS) $(DBG) $(INCLUDE) $(LD) clhash.o  $(OBJ) $(patsubst %,-fsanitize=%,$(SANITIZERS)) $< -o $@ $(LIB)
 mpitest: src/mpitest.cpp $(HEADERS)
 	mpiCC src/mpitest.cpp -lstdc++ -o mpitest
 clean:

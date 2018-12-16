@@ -13,3 +13,6 @@
 [submodule "zstd"]
 	path = zstd
 	url = https://github.com/facebook/zstd
+[submodule "clhash"]
+	path = clhash
+	url = https://github.com/lemire/clhash
