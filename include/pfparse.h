@@ -235,6 +235,22 @@ public:
             if(exist(ki))
                 func(key(ki), val(ki));
     }
+    khmap &operator|=(khmap &&o) {
+        assert_nonnull();
+        o.assert_nonnull();
+        o.for_each([&](const auto key, hit_t &h) {
+            if(auto ki = this->get(key); ki == this->capacity()) {
+                ki = this->put(key);
+                val(ki) = h;
+            } else {
+                val(ki).occ_ += h.occ_;
+                std::free(const_cast<char *>(h.s_));
+            }
+            std::memset(&h, 0, sizeof(h));
+        });
+        kh_clear(m, &o);
+        return *this;
+    }
     khmap &operator|=(const khmap &o) {
         assert_nonnull();
         o.assert_nonnull();
@@ -303,7 +319,7 @@ struct ResultSet {
         kh_destroy(m, map_);
         // words_ = parsed_ = skipped_ = 0;
     }
-    ResultSet &merge_and_destroy(ResultSet &o) {
+    ResultSet &merge_and_destroy(ResultSet &&o) {
         if(o.id_ < id_) throw std::runtime_error("Attempting to merge results out of order. Abort!\n");
         if(!sa_ != !o.sa_) throw std::runtime_error("ResultSets being merged where presence or absence of suffix array sampling do not agree.");
         lastcs_.insert(lastcs_.end(), o.lastcs_.begin(), o.lastcs_.end());
@@ -315,15 +331,7 @@ struct ResultSet {
 
         if(map_.size() > o.map_.size()) // Merge into the larger map.
             std::swap_ranges((uint8_t *)&map_, (uint8_t *)&o.map_,  (uint8_t *)&o.map_ + sizeof(o.map_));
-        o.map_.for_each([&](uint64_t k, hit_t &h) {
-            if(auto ki = map_.get(k); !map_.is_end(ki)) {
-                map_.val(ki).occ_ += h.occ_;
-                std::free(const_cast<char *>(h.s_));
-            } else {
-                map_.val(ki) = h;
-            }
-        });
-        o.make_empty();
+        m.map_ |= std::move(o.map_);
         return *this;
     }
 };
@@ -432,6 +440,7 @@ public:
         }
         run();
     }
+    void seed(uint64_t newseed) {h_.seed(newseed);} //
     void run() {
         #pragma omp parallel
         for(size_t i = 0; i < results_.size(); ++i) {
