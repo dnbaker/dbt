@@ -27,7 +27,7 @@
 namespace dbt {
 namespace util {
 using namespace ::fp;
-enum SpecialChars: std::uint8_t {Dollar = 0x01, EndOfWord = 0x00};
+enum SpecialChars: std::uint8_t {Dollar = 0x02, EndOfWord = 0x00, EndOfDict = 0x01};
 
 static inline char *strdup(const char *s) {
     size_t l = std::strlen(s) + 1;

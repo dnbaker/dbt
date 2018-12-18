@@ -23,7 +23,8 @@ std::vector<std::string> load_from_file(const char *path) {
 }
 
 int main(int argc, char *argv[]) {
-    omp_set_num_threads(1);
+    if(std::find_if(argv, argv + argc, [](auto x) {return std::strcmp(x, "--help") == 0;}) != argv + argc)
+        usage();
     size_t wsz = 10;
     unsigned nthreads = 1;
     ketopt_t o = KETOPT_INIT;
@@ -33,8 +34,14 @@ int main(int argc, char *argv[]) {
             case 'p': nthreads = std::atoi(o.arg); break;
             case 'F': paths = std::move(load_from_file(o.arg)); break;
             case 'w': wsz = std::atoi(o.arg); break;
+            case 'h': case '?': usage();
         }
     }
+    if(nthreads > 1000) throw "a party";
+    omp_set_num_threads(nthreads);
+    if(argc == o.ind && paths.empty()) usage(); // No paths
+    if(paths.empty())
+        paths = std::vector<std::string>(argv + o.ind, argv + argc);
     dbt::HashPasser<std::FILE *> hp(argv[o.ind], wsz, nthreads, true);
-    hp.run();
+    hp.run("test.out");
 }

@@ -335,6 +335,55 @@ struct ResultSet {
         std::memset(this, 0, sizeof(*this)); make_sa_ = makesa;
         std::fprintf(stderr, "Made resultset with boring constructor and = %s\n", make_sa_ ? "true": "false");
     }
+    template<typename Hasher>
+    void serialize(const char *prefix, const Hasher &hasher) {
+        const char **arr = static_cast<const char **>(std::malloc(map_.size() * sizeof(const char *)));
+        auto p = arr;
+        for(khiter_t ki = 0; ki != map_.capacity(); ++ki) {
+            if(map_.exist(ki))
+                *p++ = map_.val(ki).s_; // Does not own.
+        }
+        using std::sort; // Could replace with pdqsort
+        sort(arr, arr + map_.size(), [&](const char *x, const char *y) {
+            return std::strcmp(x, y) < 0;
+        });
+        std::FILE *ofp = std::fopen((std::string(prefix) + ".dict").data(), "wb");
+        std::FILE *cfp = std::fopen((std::string(prefix) + ".occ").data(), "wb");
+        {
+            std::FILE *lastfp = std::fopen((std::string(prefix) + ".last").data(), "wb");
+            std::fwrite(lastcs_.data(), lastcs_.size(), sizeof(lastcs_[0]), lastfp);
+            std::fclose(lastfp);
+        }
+        if(sa_.size()) {
+            std::FILE *safp = std::fopen((std::string(prefix) + ".sa").data(), "wb");
+            std::fwrite(sa_.data(), sa_.size(), sizeof(sa_[0]), safp);
+            std::fclose(safp);
+        }
+        if(!ofp) throw std::runtime_error("Could not open output file");
+        u32 rank = 0;
+        std::unordered_map<uint64_t, uint32_t> k2r; k2r.reserve(map_.size());
+        // TODO: replace this with a khash 64-32 bit map
+        std::for_each(arr, arr + map_.size(), [&](const char * x) {
+            uint64_t hv = hasher(arr);
+            auto ki = map_.get(hv);
+            assert(ki != map_.capacity());
+            std::fputs(x, ofp);
+            std::fputc(util::EndOfWord, ofp);
+            std::fwrite(&map_.val(ki).occ_, 1, sizeof(u32), cfp);
+            map_.val(ki).occ_ = ++rank; // occ_ now replaces the 'rank'
+            k2r[hv] = rank;
+        });
+        std::free(arr);
+        std::fputc(util::EndOfDict, ofp);
+        std::fclose(ofp);
+        std::fclose(cfp);
+        std::FILE *pfp = std::fopen((std::string(prefix) + ".parse").data(), "wb");
+        for(auto v: parses_) {
+            u32 wval = k2r[v];
+            std::fwrite(&wval, 1, sizeof(u32), pfp);
+        }
+        std::fclose(pfp);
+    }
     ResultSet &operator=(ResultSet &&) = default;
     void reserve_all(size_t size) {
         lastcs_.reserve(size); parses_.reserve(size); if(make_sa_) sa_.reserve(size);
@@ -468,10 +517,10 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
     }
     cstr.insert(cstr.end(), wsz, util::Dollar);
     update(rs, &pos, cstr, hasher, wsz);
-    std::fprintf(stderr, "Finsished stuff with final pos = %" PRIu64 "\n", pos);
+    std::fprintf(stderr, "Finished stuff with final pos = %" PRIu64 "\n", pos);
 }
 
-template<typename PointerType=std::FILE *, typename Hasher=std::hash<std::string>>
+template<typename PointerType=std::FILE *, typename Hasher=clhasher>
 class HashPasser {
     using FType = util::FpWrapper<PointerType>;
     u32 wsz_;
@@ -499,8 +548,8 @@ public:
         }
     }
     void seed(uint64_t newseed) {h_.seed(newseed);} //
-    void run() {
-        #pragma omp parallel
+    void run(const char *path=nullptr) {
+        //#pragma omp parallel
         for(size_t i = 0; i < results_.size(); ++i) {
             perform_subwork(results_[i], h_, wsz_, path_.data());
         }
@@ -512,6 +561,9 @@ public:
         std::fprintf(stderr, "About to clean up from other chunks %zu\n", results_.size());
         results_.erase(results_.begin() + 1, results_.end());
         std::fprintf(stderr, "Mrged and destroyed from other chunks %zu\n", results_.size());
+        if(path) {
+            results_[0].serialize(path, h_);
+        }
     }
     HashPasser(HashPasser &o) = default;
     HashPasser(const HashPasser &) = delete;

@@ -49,7 +49,7 @@ endif
 EX=$(patsubst src/%.cpp,%,$(wildcard src/*.cpp))
 
 
-all: $(EX)
+all: pfparse
 
 d: $(D_EX)
 
