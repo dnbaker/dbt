@@ -82,6 +82,16 @@ public:
     auto get(u64 v) const {
         return kh_get(m, this, v);
     }
+    void swap(khmap &o) {
+#define SF(x) std::swap(x, o.x);
+        SF(keys);
+        SF(vals);
+        SF(flags);
+        std::swap(((khash_t(m) *)&o)->size, ((khash_t(m) *)this)->size);
+        std::swap(((khash_t(m) *)&o)->n_buckets, ((khash_t(m) *)this)->n_buckets);
+        std::swap(((khash_t(m) *)&o)->n_occupied, ((khash_t(m) *)this)->n_occupied);
+        std::swap(((khash_t(m) *)&o)->upper_bound, ((khash_t(m) *)this)->upper_bound);
+    }
     auto       &val(u64 ki)       {return kh_val(this, ki);}
     const auto &val(u64 ki) const {return kh_val(this, ki);}
     key_type key(u64 ki) const {return kh_key(this, ki);}
@@ -197,6 +207,7 @@ public:
         std::memset(&m, 0, sizeof(m));
         return *this;
     }
+#if 0
     void swap(khmap &m) {
         //char buf[sizeof(m)];
         std::swap_ranges(reinterpret_cast<uint8_t *>(this), reinterpret_cast<uint8_t *>(this + sizeof(*this)), reinterpret_cast<uint8_t *>(std::addressof(m)));
@@ -204,6 +215,7 @@ public:
         //std::memcpy(&m, this, sizeof(m));
         //std::memcpy(this, buf, sizeof(*this));
     }
+#endif
     void assert_nonnull() const {
 #if 0
         for_each([](auto k, const hit_t &h) {assert(h.s_);});
@@ -341,16 +353,32 @@ struct ResultSet {
             char buf[2048];
             std::sprintf(buf, "ResultSets being merged where presence or absence of suffix array sampling do not agree (%s, %s)\n", C2B(make_sa_), C2B(o.make_sa_));
         }
+        LOG_INFO("Got to inserting iterator ranges\n");
         lastcs_.insert(lastcs_.end(), o.lastcs_.begin(), o.lastcs_.end());
         parses_.insert(parses_.end(), o.parses_.begin(), o.parses_.end());
+        LOG_INFO("Next, sa\n");
         if(make_sa_) sa_.insert(sa_.end(), o.sa_.begin(), o.sa_.end());
         parsed_ += o.parsed_;
         words_ += o.words_;
         skipped_ += o.skipped_;
+        LOG_INFO("Next, sa\n");
+        if(make_sa_) sa_.insert(sa_.end(), o.sa_.begin(), o.sa_.end());
 
-        if(map_.size() > o.map_.size()) // Merge into the larger map.
-            std::swap_ranges((uint8_t *)&map_, (uint8_t *)&o.map_,  (uint8_t *)&o.map_ + sizeof(o.map_));
+        LOG_INFO("Next, Swap ranges. Map sizes: %zu, %zu\n", map_.size(), o.map_.size());
+        if(map_.size() < o.map_.size()) { // Merge into the larger map.
+            map_.swap(o.map_);
+            std::fprintf(stderr, "Swapped. Now map sizes: %zu, %zu\n", map_.size(), o.map_.size());
+        }
+        size_t unique = 0;
+        for(khint_t ki = 0; ki != o.map_.capacity(); ++ki) {
+            if(o.map_.exist(ki))
+                unique += map_.get(o.map_.key(ki)) == map_.capacity();
+        }
+        std::fprintf(stderr, "Unique: %zu\n", unique);
+        std::fprintf(stderr, "Size before merging in: %zu\n", map_.size());
         map_ |= std::move(o.map_);
+        std::fprintf(stderr, "Size after merging in: %zu\n", map_.size());
+        LOG_INFO("Moved\n");
         return *this;
     }
 };
@@ -475,6 +503,7 @@ public:
         std::fprintf(stderr, "About to merge and destroy from other chunks %zu\n", results_.size());
         for(size_t i = 1; i < results_.size(); ++i)
             results_[0].merge_and_destroy(std::move(results_[i]));
+        std::fprintf(stderr, "About to clean up from other chunks %zu\n", results_.size());
         results_.erase(results_.begin() + 1, results_.end());
         std::fprintf(stderr, "Mrged and destroyed from other chunks %zu\n", results_.size());
     }
