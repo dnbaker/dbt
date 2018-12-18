@@ -398,6 +398,10 @@ static inline INLINE int nextchar(util::FpWrapper<PType> &ifp, size_t &bi, std::
 namespace detail {
 template<typename Hasher>
 void update(ResultSet &rs, u64 *pos, ustring &cstr, const Hasher &h, u32 wsz) {
+    if(cstr.size() <= wsz) {
+        LOG_WARNING("String of length %zu/'%s' is too short. Skip!\n", cstr.size(), cstr.data());
+        return;
+    }
     auto hv = h(*(std::string *)&cstr);
     rs.parses_.push_back(hv);
     rs.map_.insert(hv, cstr);
@@ -455,14 +459,16 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
             if(krw.hash % constants::WINDOW_MOD == 0) {
                 ++rs.words_;
                 update(rs, &pos, cstr, hasher, wsz);
-                if(nelem && rs.skipped_ + rs.parsed_ == nelem + wsz) {
+                if(nelem && rs.skipped_ + rs.parsed_ >= nelem + wsz) {
                     LOG_INFO("Number of expected elements finished.\n");
+                    return;
                 }
             }
         } else krw.eat(static_cast<unsigned char>(c)), cstr.push_back(c);
     }
     cstr.insert(cstr.end(), wsz, util::Dollar);
     update(rs, &pos, cstr, hasher, wsz);
+    std::fprintf(stderr, "Finsished stuff with final pos = %" PRIu64 "\n", pos);
 }
 
 template<typename PointerType=std::FILE *, typename Hasher=std::hash<std::string>>
@@ -494,7 +500,7 @@ public:
     }
     void seed(uint64_t newseed) {h_.seed(newseed);} //
     void run() {
-        // #pragma omp parallel
+        #pragma omp parallel
         for(size_t i = 0; i < results_.size(); ++i) {
             perform_subwork(results_[i], h_, wsz_, path_.data());
         }
