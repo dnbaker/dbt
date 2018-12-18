@@ -58,7 +58,7 @@ HEADERS=$(wildcard include/*.h)
 clhash.o:
 	cd clhash && make $@ && cp $@ ..
 
-SANITIZERS=# address undefined leak # pointer-compare # pointer-substract
+SANITIZERS= # address undefined leak # pointer-compare # pointer-substract
 
 %: src/%.cpp $(HEADERS) clhash.o
 	$(CXX) $(CXXFLAGS) $(DBG) $(INCLUDE) $(LD) clhash.o  $(OBJ) $(patsubst %,-fsanitize=%,$(SANITIZERS)) $< -o $@ $(LIB)

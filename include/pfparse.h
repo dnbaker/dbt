@@ -26,10 +26,13 @@ template<typename T> class TD;
 #    define INLINE
 #  endif
 #endif
+#define C2B(x) (x ? "true": "false")
 
 namespace dbt {
 using u64 = uint64_t;
 using u32 = uint32_t;
+using ustring = std::basic_string<unsigned char>;
+using namespace std::literals;
 
 namespace {
 template<typename T>
@@ -148,11 +151,17 @@ public:
     }
     bool contains_key(u64 k) const {return !is_end(get(k));}
     // TODO: consider compressing strings by storing in 4-bits per character
+    void insert(u64 v, const ustring &s) {
+        insert(v, (const char *)s.data(), s.size());
+    }
     void insert(u64 v, const char *s, size_t nelem) {
         if(auto ki = get(v); !is_end(ki)) {
             assert(this->vals[ki].s_);
-            if(unlikely(std::strcmp(s, this->vals[ki].s_)))
-                throw std::runtime_error("Hash collision. Abort!");
+            if(unlikely(std::strcmp(s, this->vals[ki].s_))) {
+                char buf[4096];
+                std::sprintf(buf, "Hash collision. Hash value: %" PRIu64 ". strings: '%s/%zu', '%s/%zu\n", v, s, std::strlen(s), this->vals[ki].s_, std::strlen(this->vals[ki].s_));
+                throw std::runtime_error(buf);
+            }
             if(unlikely(++this->vals[ki].occ_ == 0)) // This line both increments and checks! Do not remove.
                 throw std::runtime_error("Overflow in occurrence count");
         } else {
@@ -297,46 +306,55 @@ namespace constants {
 struct ResultSet {
     std::vector<char> lastcs_; // This is used to differentiate phrases which are also in $S$
     std::vector<u64>  parses_; // This contains hashes, which serve as identifiers for phrases, until they are replaced by their lexicographic rank in the sorted dictionary.
-    std::unique_ptr<std::vector<u64>> sa_;
+    std::vector<u64> sa_;
     khmap                    map_;
     size_t                 words_;
     size_t                parsed_;
     size_t               skipped_;
     unsigned                  id_; // Integral value reflecting which result subsection it is.
     u64 start_, stop_;
-    ResultSet(u32 id, bool savec=false, u64 start=0, u64 stop=0): sa_(savec ? new std::vector<u64>: nullptr), words_(0), parsed_(0), skipped_(0), id_(id), start_(start), stop_(stop) {
+    bool make_sa_;
+    ResultSet(u32 id, bool savec=false, u64 start=0, u64 stop=0): words_(0), parsed_(0), skipped_(0), id_(id), start_(start), stop_(stop), make_sa_(savec) {
         reserve_all(stop_ - start_);
+        std::fprintf(stderr, "Made resultset with savec = %s\n", make_sa_ ? "true": "false");
     }
     ResultSet(ResultSet &&) = default;
+    ResultSet(bool makesa=false) {
+        std::memset(this, 0, sizeof(*this)); make_sa_ = makesa;
+        std::fprintf(stderr, "Made resultset with boring constructor and = %s\n", make_sa_ ? "true": "false");
+    }
+    ResultSet &operator=(ResultSet &&) = default;
     void reserve_all(size_t size) {
-        lastcs_.reserve(size); parses_.reserve(size); if(sa_) sa_->reserve(size);
+        lastcs_.reserve(size); parses_.reserve(size); if(make_sa_) sa_.reserve(size);
     }
     void make_empty() {
 #define DEL(x) decltype(x)().swap(x);
         DEL(lastcs_);
         DEL(parses_);
-        sa_.release();
+        DEL(sa_);
         kh_destroy(m, map_);
         // words_ = parsed_ = skipped_ = 0;
     }
     ResultSet &merge_and_destroy(ResultSet &&o) {
         if(o.id_ < id_) throw std::runtime_error("Attempting to merge results out of order. Abort!\n");
-        if(!sa_ != !o.sa_) throw std::runtime_error("ResultSets being merged where presence or absence of suffix array sampling do not agree.");
+        if(!make_sa_ != !o.make_sa_) {
+            char buf[2048];
+            std::sprintf(buf, "ResultSets being merged where presence or absence of suffix array sampling do not agree (%s, %s)\n", C2B(make_sa_), C2B(o.make_sa_));
+        }
         lastcs_.insert(lastcs_.end(), o.lastcs_.begin(), o.lastcs_.end());
         parses_.insert(parses_.end(), o.parses_.begin(), o.parses_.end());
-        sa_->insert(sa_->end(), o.sa_->begin(), o.sa_->end());
+        if(make_sa_) sa_.insert(sa_.end(), o.sa_.begin(), o.sa_.end());
         parsed_ += o.parsed_;
         words_ += o.words_;
         skipped_ += o.skipped_;
 
         if(map_.size() > o.map_.size()) // Merge into the larger map.
             std::swap_ranges((uint8_t *)&map_, (uint8_t *)&o.map_,  (uint8_t *)&o.map_ + sizeof(o.map_));
-        m.map_ |= std::move(o.map_);
+        map_ |= std::move(o.map_);
         return *this;
     }
 };
 
-using ustring = std::basic_string<unsigned char>;
 
 template<typename PType>
 static inline INLINE int nextchar(util::FpWrapper<PType> &ifp, size_t &bi, std::vector<char> &buf) {
@@ -352,13 +370,13 @@ static inline INLINE int nextchar(util::FpWrapper<PType> &ifp, size_t &bi, std::
 namespace detail {
 template<typename Hasher>
 void update(ResultSet &rs, u64 *pos, ustring &cstr, const Hasher &h, u32 wsz) {
-    auto hv = h.operator ()(cstr);
+    auto hv = h(*(std::string *)&cstr);
     rs.parses_.push_back(hv);
     rs.map_.insert(hv, cstr);
     rs.lastcs_.push_back(cstr[cstr.size() - 1 - wsz]);
     if(*pos==0) *pos = cstr.size()-1;
     else       *pos += cstr.size() - wsz;
-    if(rs.sa_) rs.sa_->push_back(*pos);
+    if(rs.make_sa_) rs.sa_.push_back(*pos);
     cstr.erase(cstr.begin(), cstr.begin() + (cstr.size() - wsz));
 }
 }
@@ -376,23 +394,28 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
     ifp.open(path, "rb");
     rs.skipped_ = rs.parsed_ = rs.words_ = 0;
     u64 start = rs.start_, nelem = rs.stop_ - rs.start_;
-    LOG_DEBUG("About to fill from ifp = %s, with %zu/%zu\n", path, start, nelem);
+    LOG_INFO("About to fill from ifp = %s, with [%zu-%zu)\n", path, start, start + nelem);
     if(start) {
         ifp.seek(start);
         int c;
-        for(;(c = nextchar(ifp, bi, buf)) != EOF && krw.k_;cstr.push_back(c)) {
+        while((c = nextchar(ifp, bi, buf)) != EOF) {
+            if(++rs.skipped_ == nelem + wsz) {LOG_WARNING("sequence too short\n"); return;}
             krw.eat(c);
-            if(++rs.skipped_ == nelem + start) {LOG_WARNING("sequence too short\n"); return;}
+            cstr.push_back(c);
+            if(krw.hash % constants::WINDOW_MOD == 0 && rs.skipped_ >= wsz)
+                break;
         }
-        if(krw.tot_char != wsz) {LOG_WARNING("could not fill. Returning early\n"); return;}
+#if 0
+        if(krw.tot_char != wsz) {LOG_WARNING("could not fill. Returning early. fpos: %d. is eof: %s. total parsed: %d. k_: %u.\n", int(ifp.tell()), C2B(ifp.eof()), krw.tot_char, krw.k_); return;}
         while(rs.skipped_ < wsz || krw.hash % constants::WINDOW_MOD) {
             if((c = nextchar(ifp, bi, buf)) == EOF) {LOG_WARNING("sequence too short2\n"); return;}
             if(++rs.skipped_ == nelem + start) {LOG_WARNING("sequence too short3\n"); return;}
             krw.eat(c);
         }
-        rs.parsed_ = wsz;
+#endif
+        rs.parsed_   = wsz;
         rs.skipped_ -= wsz;
-        assert(wsz == cstr.size());
+        if(cstr.size() > wsz) cstr.erase(0, cstr.size() - wsz);
     } else cstr.push_back(util::Dollar);
     u64 pos = start ? start + rs.skipped_ + wsz: 0;
     using detail::update;
@@ -404,7 +427,9 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
             if(krw.hash % constants::WINDOW_MOD == 0) {
                 ++rs.words_;
                 update(rs, &pos, cstr, hasher, wsz);
-                if(nelem && rs.skipped_ + rs.parsed_ == nelem + wsz) break;
+                if(nelem && rs.skipped_ + rs.parsed_ == nelem + wsz) {
+                    LOG_INFO("Number of expected elements finished.\n");
+                }
             }
         } else krw.eat(static_cast<unsigned char>(c)), cstr.push_back(c);
     }
@@ -412,7 +437,7 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
     update(rs, &pos, cstr, hasher, wsz);
 }
 
-template<typename PointerType=std::FILE *, typename Hasher=clhasher>
+template<typename PointerType=std::FILE *, typename Hasher=std::hash<std::string>>
 class HashPasser {
     using FType = util::FpWrapper<PointerType>;
     u32 wsz_;
@@ -421,50 +446,48 @@ class HashPasser {
     std::string path_;
 public:
 
-    ResultSet *final_rb_;
-
 
     HashPasser(const char *path, unsigned wsz=10, int nthreads=0, bool makesa=true):
-        wsz_(wsz), path_(path),
-        final_rb_(nullptr) // For final, collapsed map.
+        wsz_(wsz), path_(path)
     {
         if(nthreads < 1)
             nthreads = std::thread::hardware_concurrency(); // I want all cores and threads you have.
-        results_.reserve(nthreads);
+        make_subs(path, nthreads, makesa);
+    }
+    void make_subs(const char *path, unsigned nthreads, bool makesa) {
         const size_t fsz = util::get_fsz<PointerType>(path), per_chunk = std::ceil(double(fsz) / nthreads);
         size_t start = 0, stop;
+        results_.reserve(nthreads);
         while(results_.size() < unsigned(nthreads)) {
             stop = std::min(fsz, start + per_chunk);
             results_.emplace_back(results_.size(), makesa, start, stop);
             start = stop;
         }
-        run();
     }
     void seed(uint64_t newseed) {h_.seed(newseed);} //
     void run() {
-        #pragma omp parallel
+        // #pragma omp parallel
         for(size_t i = 0; i < results_.size(); ++i) {
             perform_subwork(results_[i], h_, wsz_, path_.data());
         }
-        final_rb_ = static_cast<ResultSet *>(std::malloc(sizeof(ResultSet)));
-        std::memcpy(final_rb_, results_.data(), sizeof(*final_rb_));
-        std::memset(results_.data(), 0, sizeof(*final_rb_));
-        if(results_.size() == 1) return;
         // TODO: improve the 'reduce' portion of this.
         // It really should be done in parallel in a divide and conquer tree of logarithmic depth.
+        std::fprintf(stderr, "About to merge and destroy from other chunks %zu\n", results_.size());
         for(size_t i = 1; i < results_.size(); ++i)
-            final_rb_->merge_and_destroy(results_[i]);
+            results_[0].merge_and_destroy(std::move(results_[i]));
+        results_.erase(results_.begin() + 1, results_.end());
+        std::fprintf(stderr, "Mrged and destroyed from other chunks %zu\n", results_.size());
     }
-    HashPasser(HashPasser &o): h_(std::move(o.h_)), results_(std::move(o.results_)), final_rb_(o.final_rb_) {o.final_rb_ = nullptr;}
+    HashPasser(HashPasser &o) = default;
     HashPasser(const HashPasser &) = delete;
 
     ~HashPasser() {
-        if(final_rb_) final_rb_->~ResultSet(), std::free(final_rb_);
     }
 
     auto w() const {return h_.n;}
 };
 
+#undef C2B
 
 } // namespace dbt
 
