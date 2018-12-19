@@ -425,18 +425,14 @@ struct ResultSet {
         LOG_INFO("Got to inserting iterator ranges\n");
         lastcs_.insert(lastcs_.end(), o.lastcs_.begin(), o.lastcs_.end());
         parses_.insert(parses_.end(), o.parses_.begin(), o.parses_.end());
-        LOG_INFO("Next, sa\n");
         if(make_sa_) sa_.insert(sa_.end(), o.sa_.begin(), o.sa_.end());
         parsed_ += o.parsed_;
         words_ += o.words_;
         skipped_ += o.skipped_;
-        LOG_INFO("Next, sa\n");
-        if(make_sa_) sa_.insert(sa_.end(), o.sa_.begin(), o.sa_.end());
 
-        LOG_INFO("Next, Swap ranges. Map sizes: %zu, %zu\n", map_.size(), o.map_.size());
         if(map_.size() < o.map_.size()) { // Merge into the larger map.
             map_.swap(o.map_);
-            std::fprintf(stderr, "Swapped. Now map sizes: %zu, %zu\n", map_.size(), o.map_.size());
+            LOG_DEBUG("Swapped maps. Now map sizes: %zu, %zu\n", map_.size(), o.map_.size());
         }
         size_t unique = 0;
         for(khint_t ki = 0; ki != o.map_.capacity(); ++ki) {
@@ -592,7 +588,6 @@ public:
         std::fprintf(stderr, "About to clean up from other chunks %zu\n", results_.size());
         if(results_.size() > 1)
             results_.erase(results_.begin() + 1, results_.end());
-        std::fprintf(stderr, "Mrged and destroyed from other chunks %zu\n", results_.size());
         if(path) {
             results_[0].serialize(path);
         }
