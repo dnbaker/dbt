@@ -34,6 +34,22 @@ using u32 = uint32_t;
 using ustring = std::basic_string<unsigned char>;
 using namespace std::literals;
 
+#if 0
+static const clhasher GLOBAL_HASHER(13, 137);
+#else
+struct charhash {
+    uint64_t operator()(const char *x) const {
+        uint64_t ret = *x++;
+        if(ret) for(++x;*x;++x) ret = (ret << 5) - ret + *x;
+        return ret;
+    }
+    uint64_t operator()(const std::string &x) const {
+        return this->operator()(x.data());
+    }
+};
+static const charhash GLOBAL_HASHER;
+#endif
+
 namespace {
 template<typename T>
 static std::string stringify(const T &x) {
@@ -287,7 +303,7 @@ public:
 };
 
 
-template<typename, typename> class HashPasser;
+template<typename> class HashPasser;
 
 
 namespace lut {
@@ -335,8 +351,8 @@ struct ResultSet {
         std::memset(this, 0, sizeof(*this)); make_sa_ = makesa;
         std::fprintf(stderr, "Made resultset with boring constructor and = %s\n", make_sa_ ? "true": "false");
     }
-    template<typename Hasher>
-    void serialize(const char *prefix, const Hasher &hasher) {
+    void serialize(const char *prefix) {
+        std::fprintf(stderr, "map size: %zu. lastcs %zu, parses %zu, sa %zu. words: %zu\n", map_.size(), lastcs_.size(), parses_.size(), sa_.size(), words_);
         const char **arr = static_cast<const char **>(std::malloc(map_.size() * sizeof(const char *)));
         auto p = arr;
         for(khiter_t ki = 0; ki != map_.capacity(); ++ki) {
@@ -344,6 +360,7 @@ struct ResultSet {
                 *p++ = map_.val(ki).s_; // Does not own.
         }
         using std::sort; // Could replace with pdqsort
+        assert(std::accumulate(arr, arr + map_.size(), true, [](bool v, const char *x) {return v && x != 0;}));
         sort(arr, arr + map_.size(), [&](const char *x, const char *y) {
             return std::strcmp(x, y) < 0;
         });
@@ -360,26 +377,29 @@ struct ResultSet {
             std::fclose(safp);
         }
         if(!ofp) throw std::runtime_error("Could not open output file");
+        size_t total_occ_sum = 0;
         u32 rank = 0;
         std::unordered_map<uint64_t, uint32_t> k2r; k2r.reserve(map_.size());
         // TODO: replace this with a khash 64-32 bit map
         std::for_each(arr, arr + map_.size(), [&](const char * x) {
-            uint64_t hv = hasher(arr);
+            uint64_t hv = GLOBAL_HASHER(x);
             auto ki = map_.get(hv);
             assert(ki != map_.capacity());
             std::fputs(x, ofp);
             std::fputc(util::EndOfWord, ofp);
             std::fwrite(&map_.val(ki).occ_, 1, sizeof(u32), cfp);
+            total_occ_sum += map_.val(ki).occ_;
             map_.val(ki).occ_ = ++rank; // occ_ now replaces the 'rank'
             k2r[hv] = rank;
         });
+        std::fprintf(stderr, "Occurrence count: %zu\n", total_occ_sum);
         std::free(arr);
         std::fputc(util::EndOfDict, ofp);
         std::fclose(ofp);
         std::fclose(cfp);
         std::FILE *pfp = std::fopen((std::string(prefix) + ".parse").data(), "wb");
         for(auto v: parses_) {
-            u32 wval = k2r[v];
+            u32 wval = k2r.at(v);
             std::fwrite(&wval, 1, sizeof(u32), pfp);
         }
         std::fclose(pfp);
@@ -470,16 +490,23 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
     ustring cstr;
     krw::KRWindow krw(wsz);
     std::vector<char> buf(1 << 14);
-    size_t bi = 0;
+    size_t bi = buf.size();
     util::FpWrapper<PointerType> ifp;
     ifp.open(path, "rb");
     rs.skipped_ = rs.parsed_ = rs.words_ = 0;
     u64 start = rs.start_, nelem = rs.stop_ - rs.start_;
     LOG_INFO("About to fill from ifp = %s, with [%zu-%zu)\n", path, start, start + nelem);
-    if(start) {
+    u64 pos = 0;
+    if(start == 0) cstr.push_back(util::Dollar);
+    else {
         ifp.seek(start);
         int c;
         while((c = nextchar(ifp, bi, buf)) != EOF) {
+            if(unlikely(c <= util::Dollar)) {
+                char buf[128];
+                std::sprintf(buf, "Error: file contains a character 0x0[012], which is verboten. (%d)\n", c);
+                throw std::runtime_error(buf);
+            }
             if(++rs.skipped_ == nelem + wsz) {LOG_WARNING("sequence too short\n"); return;}
             krw.eat(c);
             cstr.push_back(c);
@@ -496,35 +523,39 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
 #endif
         rs.parsed_   = wsz;
         rs.skipped_ -= wsz;
-        if(cstr.size() > wsz) cstr.erase(0, cstr.size() - wsz);
-    } else cstr.push_back(util::Dollar);
-    u64 pos = start ? start + rs.skipped_ + wsz: 0;
+        cstr.erase(0, cstr.size() - wsz);
+        assert(cstr.size() == rs.skipped_);
+        pos = start + rs.skipped_ + wsz;
+    }
     using detail::update;
     for(int c; likely((c = nextchar(ifp, bi, buf)) != EOF);) {
-        ++rs.parsed_;
-        if(cstr.size() >= wsz) {
-            krw.eat(c);
-            cstr.push_back(c);
-            if(krw.hash % constants::WINDOW_MOD == 0) {
-                ++rs.words_;
-                update(rs, &pos, cstr, hasher, wsz);
-                if(nelem && rs.skipped_ + rs.parsed_ >= nelem + wsz) {
-                    LOG_INFO("Number of expected elements finished.\n");
-                    return;
-                }
+        if(unlikely(c <= util::Dollar)) {
+            char buf[128];
+            std::sprintf(buf, "Error: file contains a character 0x0[012], which is verboten. (%d)\n", c);
+            throw std::runtime_error(buf);
+        }
+        krw.eat(c);
+        cstr.push_back(c);
+        if(++rs.parsed_ > wsz && (krw.hash % constants::WINDOW_MOD == 0)) {
+            update(rs, &pos, cstr, hasher, wsz);
+            ++rs.words_;
+            if(nelem && rs.skipped_ + rs.parsed_ >= nelem + wsz) {
+                LOG_INFO("Number of expected elements finished.\n");
+                return;
             }
-        } else krw.eat(static_cast<unsigned char>(c)), cstr.push_back(c);
+        }
     }
     cstr.insert(cstr.end(), wsz, util::Dollar);
     update(rs, &pos, cstr, hasher, wsz);
-    std::fprintf(stderr, "Finished stuff with final pos = %" PRIu64 "\n", pos);
+    LOG_INFO("Finished stuff with final pos = %" PRIu64 "\n", pos);
 }
 
-template<typename PointerType=std::FILE *, typename Hasher=clhasher>
+
+template<typename PointerType=std::FILE * /*, typename Hasher=clhasher*/>
 class HashPasser {
     using FType = util::FpWrapper<PointerType>;
     u32 wsz_;
-    Hasher h_;
+    //Hasher h_;
     std::vector<ResultSet> results_;
     std::string path_;
 public:
@@ -547,11 +578,11 @@ public:
             start = stop;
         }
     }
-    void seed(uint64_t newseed) {h_.seed(newseed);} //
+    //void seed(uint64_t newseed) {h_.seed(newseed);} //
     void run(const char *path=nullptr) {
         //#pragma omp parallel
         for(size_t i = 0; i < results_.size(); ++i) {
-            perform_subwork(results_[i], h_, wsz_, path_.data());
+            perform_subwork(results_[i], GLOBAL_HASHER, wsz_, path_.data());
         }
         // TODO: improve the 'reduce' portion of this.
         // It really should be done in parallel in a divide and conquer tree of logarithmic depth.
@@ -559,10 +590,11 @@ public:
         for(size_t i = 1; i < results_.size(); ++i)
             results_[0].merge_and_destroy(std::move(results_[i]));
         std::fprintf(stderr, "About to clean up from other chunks %zu\n", results_.size());
-        results_.erase(results_.begin() + 1, results_.end());
+        if(results_.size() > 1)
+            results_.erase(results_.begin() + 1, results_.end());
         std::fprintf(stderr, "Mrged and destroyed from other chunks %zu\n", results_.size());
         if(path) {
-            results_[0].serialize(path, h_);
+            results_[0].serialize(path);
         }
     }
     HashPasser(HashPasser &o) = default;
@@ -571,7 +603,7 @@ public:
     ~HashPasser() {
     }
 
-    auto w() const {return h_.n;}
+    auto w() const {return wsz_;}
 };
 
 #undef C2B

@@ -22,6 +22,15 @@ std::vector<std::string> load_from_file(const char *path) {
     return ret;
 }
 
+
+
+std::string sanitize(std::string in) {
+    char *s;
+    if((s = std::strrchr(in.data(), '/')) != nullptr)
+        in = std::string(s, in.data() + in.size());
+    return in;
+}
+
 int main(int argc, char *argv[]) {
     if(std::find_if(argv, argv + argc, [](auto x) {return std::strcmp(x, "--help") == 0;}) != argv + argc)
         usage();
@@ -42,6 +51,8 @@ int main(int argc, char *argv[]) {
     if(argc == o.ind && paths.empty()) usage(); // No paths
     if(paths.empty())
         paths = std::vector<std::string>(argv + o.ind, argv + argc);
-    dbt::HashPasser<std::FILE *> hp(argv[o.ind], wsz, nthreads, true);
-    hp.run("test.out");
+    for(const auto &p: paths) {
+        dbt::HashPasser<std::FILE *> hp(p.data(), wsz, nthreads, true);
+        hp.run(sanitize(p).data());
+    }
 }
