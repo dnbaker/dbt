@@ -4,6 +4,7 @@
 #include <cstring>
 #include "fpwrap/fpwrap.h"
 #include <cinttypes>
+#include "unistd.h"
 
 #ifndef FOREVER
 #  define FOREVER for(;;)
@@ -27,7 +28,15 @@
 namespace dbt {
 namespace util {
 using namespace ::fp;
-enum SpecialChars: std::uint8_t {Dollar = 0x02, EndOfWord = 0x00, EndOfDict = 0x01};
+
+enum SpecialChars: std::uint8_t {
+    Dollar = 0x02,
+    EndOfWord = 0x00,
+    EndOfDict = 0x01
+};
+
+inline bool isfile(const char *path) noexcept {return access(path, F_OK) != -1;}
+inline bool isfile(const std::string &path) noexcept {return isfile(path.data());}
 
 static inline char *strdup(const char *s) {
     size_t l = std::strlen(s) + 1;

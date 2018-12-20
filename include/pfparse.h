@@ -33,14 +33,20 @@ using u64 = uint64_t;
 using u32 = uint32_t;
 using ustring = std::basic_string<unsigned char>;
 using namespace std::literals;
+using fp::FpWrapper;
 
-#if 0
+#if 1
 static const clhasher GLOBAL_HASHER(13, 137);
 #else
 struct charhash {
     uint64_t operator()(const char *x) const {
         uint64_t ret = *x++;
         if(ret) for(++x;*x;++x) ret = (ret << 5) - ret + *x;
+        return ret;
+    }
+    uint64_t operator()(const std::string &s) const {
+        uint64_t ret = s[0];
+        if(ret) for(unsigned i = 1;i < s.size();ret = (ret << 5) - ret + s[i++]);
         return ret;
     }
     uint64_t operator()(const std::string &x) const {
@@ -331,6 +337,21 @@ namespace constants {
     static constexpr u64 WINDOW_MOD  = 100;
 }
 
+template<typename PType>
+int get_word(FpWrapper<PType> &fp, std::string &s) {
+    for(int c;(c = fp.getc()) != EOF;) {
+        switch(c) {
+            case util::EndOfWord:
+                return 1; // End of word
+            case util::EndOfDict:
+                return 0; // End of dict
+            default:
+                s += c;
+        }
+    }
+    return EOF;
+}
+
 struct ResultSet {
     std::vector<char> lastcs_; // This is used to differentiate phrases which are also in $S$
     std::vector<u64>  parses_; // This contains hashes, which serve as identifiers for phrases, until they are replaced by their lexicographic rank in the sorted dictionary.
@@ -346,12 +367,69 @@ struct ResultSet {
         reserve_all(stop_ - start_);
         std::fprintf(stderr, "Made resultset with savec = %s\n", make_sa_ ? "true": "false");
     }
+    ResultSet(const char *prefix, bool is_remapped) {
+        this->deserialize(prefix, is_remapped);
+    }
+
+    static constexpr const char *SA = ".sa";
+    static constexpr const char *LAST = ".last";
+    static constexpr const char *OCC = ".occ";
+    static constexpr const char *DICT = ".dict";
+    static constexpr const char *PARSE = ".parse";
+#define DEC_MNAME(fn, ext)\
+    static std::string fn(std::string prefix)  {return prefix + ext;}
+    DEC_MNAME(mdname, DICT)
+    DEC_MNAME(moname, OCC)
+    DEC_MNAME(mlname, LAST)
+    DEC_MNAME(msname, SA)
+    DEC_MNAME(mpname, PARSE)
+
+    void deserialize(const char *prefix, bool is_remapped) {
+        auto dn = mdname(prefix);
+        auto pn = mpname(prefix);
+        auto ln = mlname(prefix);
+        auto on = moname(prefix);
+        auto sn = msname(prefix);
+        {  // Handle last characters first, as this is the lowest-memory way to find out what size buffers to resize to.
+            lastcs_.clear();
+            FpWrapper<gzFile> lfp(ln);
+            for(int c;((c = lfp.getc()) != EOF);lastcs_.push_back(c)); // Put file contents into string.
+        }
+        size_t parse_size = lastcs_.size();
+        parses_.reserve(parse_size);
+        if(util::isfile(sn)) {
+            FpWrapper<gzFile> safp(sn, "rb");
+            sa_.reserve(parse_size);
+            for(u64 v; safp.read(v) == sizeof(v); sa_.push_back(v));
+        }
+        {
+            std::string word;
+            FpWrapper<gzFile> dfp(dn), occfp(on);
+            u32 occ;
+            int c;
+            while((c = get_word(dfp, word)) > 0) {
+                u64 h = GLOBAL_HASHER(word);
+                if(unlikely(occfp.read(occ) != sizeof(occ))) throw std::runtime_error("Could not read occs from file.");
+                auto ki = map_.put(h);
+                map_.val(ki) = hit_t{util::strdup(word.data()), occ};
+            }
+            if(c == EOF) LOG_WARNING("Reached EOF without hitting and EndOfDictionary character.");
+        }
+        {
+            FpWrapper<std::FILE *> pfp(pn);
+            if(is_remapped)
+                for(u32 v;pfp.read(v) == sizeof(v); parses_.push_back(v));
+            else
+                for(u64 v;pfp.read(v) == sizeof(v); parses_.push_back(v));
+        }
+        
+    }
     ResultSet(ResultSet &&) = default;
     ResultSet(bool makesa=false) {
         std::memset(this, 0, sizeof(*this)); make_sa_ = makesa;
         std::fprintf(stderr, "Made resultset with boring constructor and = %s\n", make_sa_ ? "true": "false");
     }
-    void serialize(const char *prefix) {
+    void serialize(const char *prefix, bool remap_parse) {
         std::fprintf(stderr, "map size: %zu. lastcs %zu, parses %zu, sa %zu. words: %zu\n", map_.size(), lastcs_.size(), parses_.size(), sa_.size(), words_);
         const char **arr = static_cast<const char **>(std::malloc(map_.size() * sizeof(const char *)));
         auto p = arr;
@@ -379,9 +457,10 @@ struct ResultSet {
         if(!ofp) throw std::runtime_error("Could not open output file");
         size_t total_occ_sum = 0;
         u32 rank = 0;
-        std::unordered_map<uint64_t, uint32_t> k2r; k2r.reserve(map_.size());
+        std::unordered_map<uint64_t, uint32_t> k2r;
+        if(remap_parse) k2r.reserve(map_.size());
         // TODO: replace this with a khash 64-32 bit map
-        std::for_each(arr, arr + map_.size(), [&](const char * x) {
+        std::for_each(arr, arr + map_.size(), [&, rp=remap_parse](const char * x) {
             uint64_t hv = GLOBAL_HASHER(x);
             auto ki = map_.get(hv);
             assert(ki != map_.capacity());
@@ -389,8 +468,10 @@ struct ResultSet {
             std::fputc(util::EndOfWord, ofp);
             std::fwrite(&map_.val(ki).occ_, 1, sizeof(u32), cfp);
             total_occ_sum += map_.val(ki).occ_;
-            map_.val(ki).occ_ = ++rank; // occ_ now replaces the 'rank'
-            k2r[hv] = rank;
+            if(rp) {
+                map_.val(ki).occ_ = ++rank; // occ_ now replaces the 'rank'
+                k2r[hv] = rank;
+            }
         });
         std::fprintf(stderr, "Occurrence count: %zu\n", total_occ_sum);
         std::free(arr);
@@ -398,10 +479,10 @@ struct ResultSet {
         std::fclose(ofp);
         std::fclose(cfp);
         std::FILE *pfp = std::fopen((std::string(prefix) + ".parse").data(), "wb");
-        for(auto v: parses_) {
-            u32 wval = k2r.at(v);
-            std::fwrite(&wval, 1, sizeof(u32), pfp);
-        }
+        if(remap_parse)
+            for(auto v: parses_) std::fwrite(&k2r.at(v), 1, sizeof(u32), pfp);
+        else
+            for(auto v: parses_) std::fwrite(&v, 1, sizeof(v), pfp);
         std::fclose(pfp);
     }
     ResultSet &operator=(ResultSet &&) = default;
@@ -450,7 +531,7 @@ struct ResultSet {
 
 
 template<typename PType>
-static inline INLINE int nextchar(util::FpWrapper<PType> &ifp, size_t &bi, std::vector<char> &buf) {
+static inline INLINE int nextchar(FpWrapper<PType> &ifp, size_t &bi, std::vector<char> &buf) {
     if(__builtin_expect(bi == buf.size(), 0)) {
         int n = ifp.bulk_read(buf.data(), buf.size()); /* To omit double buffering. */
         if(n <= 0) return EOF;
@@ -487,7 +568,7 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
     krw::KRWindow krw(wsz);
     std::vector<char> buf(1 << 14);
     size_t bi = buf.size();
-    util::FpWrapper<PointerType> ifp;
+    FpWrapper<PointerType> ifp;
     ifp.open(path, "rb");
     rs.skipped_ = rs.parsed_ = rs.words_ = 0;
     u64 start = rs.start_, nelem = rs.stop_ - rs.start_;
@@ -549,7 +630,7 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
 
 template<typename PointerType=std::FILE * /*, typename Hasher=clhasher*/>
 class HashPasser {
-    using FType = util::FpWrapper<PointerType>;
+    using FType = FpWrapper<PointerType>;
     u32 wsz_;
     //Hasher h_;
     std::vector<ResultSet> results_;
@@ -575,7 +656,7 @@ public:
         }
     }
     //void seed(uint64_t newseed) {h_.seed(newseed);} //
-    void run(const char *path=nullptr) {
+    void run(const char *path=nullptr, bool remap=false) {
         //#pragma omp parallel
         for(size_t i = 0; i < results_.size(); ++i) {
             perform_subwork(results_[i], GLOBAL_HASHER, wsz_, path_.data());
@@ -589,7 +670,7 @@ public:
         if(results_.size() > 1)
             results_.erase(results_.begin() + 1, results_.end());
         if(path) {
-            results_[0].serialize(path);
+            results_[0].serialize(path, remap);
         }
     }
     HashPasser(HashPasser &o) = default;
