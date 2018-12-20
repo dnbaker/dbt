@@ -36,8 +36,10 @@ int main(int argc, char *argv[]) {
     unsigned nthreads = 1;
     ketopt_t o = KETOPT_INIT;
     std::vector<std::string> paths;
+    std::string final_prefix = "final_prefix";
     for(int c; (c = ketopt(&o, argc, argv, true /* permute */, "w:p:F:h?", nullptr)) >= 0;) {
         switch(c) {
+            case 'O': final_prefix = o.arg; break;
             case 'p': nthreads = std::atoi(o.arg); break;
             case 'F': paths = std::move(load_from_file(o.arg)); break;
             case 'w': wsz = std::atoi(o.arg); break;
@@ -54,4 +56,10 @@ int main(int argc, char *argv[]) {
         dbt::HashPasser<gzFile> hp(paths[i].data(), wsz, 1, true);
         hp.run(sanitize(paths[i]).data());
     }
+    #pragma omp parallel for schedule(static,1)
+    for(size_t i = 0; i < paths.size(); ++i) {
+        paths[i] = sanitize(paths[i]);
+    }
+    omp_set_num_threads(1); // Return to OS.
+    massive_merge(paths, final_prefix, nthreads);
 }

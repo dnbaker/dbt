@@ -18,6 +18,7 @@
 #include "include/krw.h"
 #include "clhash/include/clhash.h"
 #include "pdqsort/pdqsort.h"
+#include "kspp/ks.h"
 #include <omp.h>
 template<typename T> class TD;
 
@@ -181,6 +182,9 @@ public:
     template<class T, class BinaryOperation=std::plus<T>>
     INLINE T kvacc(khint_t start, khint_t end, T init, BinaryOperation op) const {
         return accumulate(start, end, init, op, [this](khint_t x) {return std::make_pair(key(x), std::ref(val(x)));});
+    }
+    auto reserve(size_t newsz) {
+        return kh_resize(m, this, newsz);
     }
     auto put(u64 k) {
         int khr;
@@ -484,6 +488,11 @@ struct ResultSet {
         });
         std::free(arr);
         LOG_INFO("Total occurrence sum: %zu\n", total_occ_sum);
+        std::FILE *pfp = std::fopen((std::string(prefix) + ".parse").data(), "wb");
+        if(!pfp) throw std::runtime_error("Could not open parse file for writing.");
+        LOG_WARNING("Remapping is not yet done in this phase.");
+        ::write(::fileno(pfp), parses_.data(), sizeof(parses_[0]) * parses_.size());
+        std::fclose(pfp);
 #if 0
         size_t total_occ_sum = 0;
         u32 rank = 0;
@@ -507,12 +516,6 @@ struct ResultSet {
         std::fputc(util::EndOfDict, ofp);
         std::fclose(ofp);
         std::fclose(cfp);
-        std::FILE *pfp = std::fopen((std::string(prefix) + ".parse").data(), "wb");
-        if(remap_parse)
-            for(auto v: parses_) std::fwrite(&k2r.at(v), 1, sizeof(u32), pfp);
-        else
-            for(auto v: parses_) std::fwrite(&v, 1, sizeof(v), pfp);
-        std::fclose(pfp);
 #endif
     }
     ResultSet &operator=(ResultSet &&) = default;
@@ -563,7 +566,7 @@ struct ResultSet {
 
 
 template<typename PType>
-static inline INLINE int nextchar(FpWrapper<PType> &ifp, size_t &bi, std::vector<char> &buf) {
+static INLINE int nextchar(FpWrapper<PType> &ifp, size_t &bi, std::vector<char> &buf) {
     if(__builtin_expect(bi == buf.size(), 0)) {
         int n = ifp.bulk_read(buf.data(), buf.size()); /* To omit double buffering. */
         if(n <= 0) return EOF;
@@ -732,6 +735,53 @@ public:
 
     auto w() const {return wsz_;}
 };
+
+
+static void massive_merge(const std::vector<std::string> &paths, const std::string &oprefix, bool make_sa, unsigned num_threads=1) {
+    omp_set_num_threads(num_threads);
+    std::vector<std::FILE *> fps;
+    ks::string cmd = ks::sprintf("cat ");
+    for(const auto &p: paths) {
+        cmd.sprintf(" %s.last", p.data());
+    }
+    cmd.sprintf(" > %s.last", oprefix.data());
+    if(auto fp = popen(cmd.data(), "r"); fp == nullptr) throw std::runtime_error("Could not perform last concatenation.");
+    else fps.push_back(fp);
+    cmd.clear();
+    cmd += "cat ";
+    if(make_sa) {
+        for(const auto &p: paths) {
+            cmd.sprintf(" %s.sa", p.data());
+        }
+        cmd.sprintf(" > %s.sa", oprefix.data());
+        if(auto fp = popen(cmd.data(), "r"); fp == nullptr) throw std::runtime_error("Could not perform sa concatenation.");
+        else fps.push_back(fp);
+    }
+    cmd.clear();
+    cmd += "cat ";
+    for(const auto &p: paths) {
+        cmd.sprintf(" %s.parse", p.data());
+    }
+    cmd.sprintf(" > %s.parse", oprefix.data());
+    if(auto fp = popen(cmd.data(), "r"); fp == nullptr) throw std::runtime_error("Could not perform last concatenation.");
+    else fps.push_back(fp);
+    for(auto fp: fps)
+        if(auto i = std::fclose(fp); i != 0)
+            throw std::runtime_error("Error in popen process.");
+    std::vector<FpWrapper<std::FILE *>> dreaders(paths.size()), oreaders(paths.size());
+    std::vector<size_t> sizes(paths.size());
+
+    #pragma omp parallel for
+    for(size_t i = 0; i < dreaders.size(); ++i) {
+        dreaders[i].open(paths[i] + ".dict");
+        oreaders[i].open(paths[i] + ".occ");
+        sizes[i] = util::get_fsz<std::FILE *>(paths[i] + ".occ") >> 2;
+    }
+    khmap master_map;
+    master_map.reserve(*std::max_element(sizes.begin(), sizes.end()));
+    throw std::runtime_error("NotImplemented.");
+    // 4. Merge dictionary
+}
 
 #undef C2B
 

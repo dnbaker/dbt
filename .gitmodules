@@ -19,3 +19,6 @@
 [submodule "pdqsort"]
 	path = pdqsort
 	url = https://github.com/orlp/pdqsort
+[submodule "kspp"]
+	path = kspp
+	url = https://github.com/dnbaker/kspp
