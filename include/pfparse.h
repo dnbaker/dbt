@@ -17,6 +17,7 @@
 #include "logutil.h"
 #include "include/krw.h"
 #include "clhash/include/clhash.h"
+#include "pdqsort/pdqsort.h"
 #include <omp.h>
 template<typename T> class TD;
 
@@ -28,6 +29,12 @@ template<typename T> class TD;
 #  endif
 #endif
 #define C2B(x) (x ? "true": "false")
+
+#ifndef USE_STD_SORT
+#define SORT ::pdqsort
+#else
+#define SORT ::std::sort
+#endif
 
 namespace dbt {
 using u64 = uint64_t;
@@ -440,9 +447,8 @@ struct ResultSet {
                 *p++ = map_.val(ki).s_; // Does not own.
         }
         LOG_DEBUG("All char pointers are now in a contiguous chunk of memory of %zu items\n", map_.size());
-        using std::sort; // Could replace with pdqsort
         assert(std::accumulate(arr, arr + map_.size(), true, [](bool v, const char *x) {return v && x != 0;}));
-        sort(arr, arr + map_.size(), [&](const char *x, const char *y) {
+        SORT(arr, arr + map_.size(), [&](const char *x, const char *y) {
             return std::strcmp(x, y) < 0;
         });
         LOG_DEBUG("Char pointers are now sorted. First char pointer: %s. Last: %s\n", arr[0], arr[map_.size() - 1]);
