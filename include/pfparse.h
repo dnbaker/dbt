@@ -741,7 +741,7 @@ int next_string(FpWrapper<PType> &dr, FpWrapper<PType> & ocr, u32 &occ, std::str
     ret.clear();
     for(int c; (c = dr.getc()) != EOF;) {
         switch(c) {
-            case util::EndOfWord: ocr.read(occ); return 0;
+            case util::EndOfWord: ocr.read(occ); if(ret[0] == util::Dollar) ret.erase(ret.begin()); return 0;
             case util::EndOfDict: return 1;
             default: ret += c;
         }
@@ -798,6 +798,7 @@ static void massive_merge(const std::vector<std::string> &paths, const std::stri
     foccfp.open(oprefix + ".occ", "wb");
     for(size_t i = 0; i < N; ++i)
         if(next_string(dreaders[i], oreaders[i], occ_counts[i], strings[i])) throw std::runtime_error("Could not get first phrases from files.");
+    finalfp.write(util::Dollar);
     do {
         size_t i = std::min_element(strings.begin(), strings.end()) - strings.begin();
         std::set<size_t, std::greater<size_t>> to_increment;
