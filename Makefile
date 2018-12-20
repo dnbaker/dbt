@@ -23,7 +23,7 @@ DBG:=
 OS:=$(shell uname)
 FLAGS=
 
-OPT_MINUS_OPENMP= -O3 -DNDEBUG \
+OPT_MINUS_OPENMP= -O3 \
 	  -pipe -fno-strict-aliasing -march=native $(FLAGS) $(EXTRA)
 OPT=$(OPT_MINUS_OPENMP) -fopenmp
 XXFLAGS=-fno-rtti
@@ -53,7 +53,7 @@ all: pfparse
 
 d: $(D_EX)
 
-HEADERS=$(wildcard include/*.h)
+HEADERS=$(wildcard include/*.h) fpwrap/fpwrap.h
 
 clhash.o:
 	cd clhash && make $@ && cp $@ ..

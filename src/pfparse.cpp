@@ -27,7 +27,7 @@ std::vector<std::string> load_from_file(const char *path) {
 std::string sanitize(std::string in) {
     char *s;
     if((s = std::strrchr(in.data(), '/')) != nullptr)
-        in = std::string(s, in.data() + in.size());
+        in = std::string(s + 1, in.data() + in.size());
     return in;
 }
 
@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
     if(paths.empty())
         paths = std::vector<std::string>(argv + o.ind, argv + argc);
     for(const auto &p: paths) {
-        dbt::HashPasser<std::FILE *> hp(p.data(), wsz, nthreads, true);
+        dbt::HashPasser<gzFile> hp(p.data(), wsz, nthreads, true);
         hp.run(sanitize(p).data());
     }
 }

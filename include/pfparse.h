@@ -17,6 +17,7 @@
 #include "logutil.h"
 #include "include/krw.h"
 #include "clhash/include/clhash.h"
+#include <omp.h>
 template<typename T> class TD;
 
 #ifndef INLINE
@@ -35,7 +36,7 @@ using ustring = std::basic_string<unsigned char>;
 using namespace std::literals;
 using fp::FpWrapper;
 
-#if 1
+#if 0
 static const clhasher GLOBAL_HASHER(13, 137);
 #else
 struct charhash {
@@ -48,9 +49,6 @@ struct charhash {
         uint64_t ret = s[0];
         if(ret) for(unsigned i = 1;i < s.size();ret = (ret << 5) - ret + s[i++]);
         return ret;
-    }
-    uint64_t operator()(const std::string &x) const {
-        return this->operator()(x.data());
     }
 };
 static const charhash GLOBAL_HASHER;
@@ -133,7 +131,7 @@ public:
     khmap& operator=(const khmap &) = delete;
     ~khmap() {
 #if !NDEBUG
-        std::fprintf(stderr, "Destroying khmap at %p\n", static_cast<void *>(this));
+        LOG_DEBUG("Destroying khmap at %p\n", static_cast<void *>(this));
 #endif
         this->free();
     }
@@ -143,14 +141,14 @@ public:
     bool exist(khint_t ki) const {return kh_exist(this, ki);}
     void print_all() const {
         for_each([](auto x, const hit_t &y) {
-            std::fprintf(stderr, "String %s has hash %" PRIu64 "\n", y.s_, x);
+            LOG_DEBUG("String %s has hash %" PRIu64 "\n", y.s_, x);
         });
     }
     size_t memory_usage(bool add_strlens=false) const {
         size_t ret = sizeof(*this) + size() * (sizeof(value_type) + sizeof(key_type)) +
         __ac_fsize(this->n_buckets) * sizeof(uint32_t);
         if(add_strlens)
-            for_each_val([&](const hit_t &h) {std::fprintf(stderr, "h.s: %s/%zu\n", h.s_, std::strlen(h.s_)); ret += std::strlen(h.s_);});
+            for_each_val([&](const hit_t &h) {LOG_DEBUG("h.s: %s/%zu\n", h.s_, std::strlen(h.s_)); ret += std::strlen(h.s_);});
         return ret;
     }
     template<class T, class GetterFunc, class BinaryOperation=std::plus<T>>
@@ -191,7 +189,7 @@ public:
             assert(this->vals[ki].s_);
             if(unlikely(std::strcmp(s, this->vals[ki].s_))) {
                 char buf[4096];
-                std::sprintf(buf, "Hash collision. Hash value: %" PRIu64 ". strings: '%s/%zu', '%s/%zu\n", v, s, std::strlen(s), this->vals[ki].s_, std::strlen(this->vals[ki].s_));
+                std::sprintf(buf, "Hash collision. Hash value: %" PRIu64 ". strings: '%s/%zu', '%s/%zu. Hashes: %zu/%zu\n", v, s, std::strlen(s), this->vals[ki].s_, std::strlen(this->vals[ki].s_), size_t(GLOBAL_HASHER(this->vals[ki].s_)), size_t(GLOBAL_HASHER(s)));
                 throw std::runtime_error(buf);
             }
             if(unlikely(++this->vals[ki].occ_ == 0)) // This line both increments and checks! Do not remove.
@@ -208,7 +206,7 @@ public:
             assert(std::accumulate(s2, s2 + nelem, true, [](bool v, const signed char c) -> bool {
                 return v && ((c >= 0) || c == util::Dollar);
             }) ||
-                  !std::fprintf(stderr, "Contents of set: %s\n", stringify(set).data()));
+                  !LOG_DEBUG("Contents of set: %s\n", stringify(set).data()));
 #endif
         }
     }
@@ -365,7 +363,7 @@ struct ResultSet {
     bool make_sa_;
     ResultSet(u32 id, bool savec=false, u64 start=0, u64 stop=0): words_(0), parsed_(0), skipped_(0), id_(id), start_(start), stop_(stop), make_sa_(savec) {
         reserve_all(stop_ - start_);
-        std::fprintf(stderr, "Made resultset with savec = %s\n", make_sa_ ? "true": "false");
+        LOG_DEBUG("Made resultset with savec = %s\n", make_sa_ ? "true": "false");
     }
     ResultSet(const char *prefix, bool is_remapped) {
         this->deserialize(prefix, is_remapped);
@@ -427,34 +425,57 @@ struct ResultSet {
     ResultSet(ResultSet &&) = default;
     ResultSet(bool makesa=false) {
         std::memset(this, 0, sizeof(*this)); make_sa_ = makesa;
-        std::fprintf(stderr, "Made resultset with boring constructor and = %s\n", make_sa_ ? "true": "false");
+        LOG_DEBUG("Made resultset with boring constructor and = %s\n", make_sa_ ? "true": "false");
     }
-    void serialize(const char *prefix, bool remap_parse) {
-        std::fprintf(stderr, "map size: %zu. lastcs %zu, parses %zu, sa %zu. words: %zu\n", map_.size(), lastcs_.size(), parses_.size(), sa_.size(), words_);
+    void serialize(const char *prefix, bool remap_parse=false) {
+        remap_parse = false;
+        LOG_DEBUG("map size: %zu. lastcs %zu, parses %zu, sa %zu. words: %zu\n", map_.size(), lastcs_.size(), parses_.size(), sa_.size(), words_);
         const char **arr = static_cast<const char **>(std::malloc(map_.size() * sizeof(const char *)));
         auto p = arr;
         for(khiter_t ki = 0; ki != map_.capacity(); ++ki) {
             if(map_.exist(ki))
                 *p++ = map_.val(ki).s_; // Does not own.
         }
+        LOG_DEBUG("All char pointers are now in a contiguous chunk of memory of %zu items\n", map_.size());
         using std::sort; // Could replace with pdqsort
         assert(std::accumulate(arr, arr + map_.size(), true, [](bool v, const char *x) {return v && x != 0;}));
         sort(arr, arr + map_.size(), [&](const char *x, const char *y) {
             return std::strcmp(x, y) < 0;
         });
-        std::FILE *ofp = std::fopen((std::string(prefix) + ".dict").data(), "wb");
-        std::FILE *cfp = std::fopen((std::string(prefix) + ".occ").data(), "wb");
+        LOG_DEBUG("Char pointers are now sorted. First char pointer: %s. Last: %s\n", arr[0], arr[map_.size() - 1]);
+        FpWrapper<std::FILE *> ofp;
+        ofp.open((std::string(prefix) + ".dict").data(), "wb");
+        FpWrapper<std::FILE *> cfp;
+        cfp.open((std::string(prefix) + ".occ").data(), "wb");
         {
-            std::FILE *lastfp = std::fopen((std::string(prefix) + ".last").data(), "wb");
-            std::fwrite(lastcs_.data(), lastcs_.size(), sizeof(lastcs_[0]), lastfp);
-            std::fclose(lastfp);
+            FpWrapper<std::FILE *> lfp;
+            lfp.open((std::string(prefix) + ".last"), "wb");
+            lfp.write(lastcs_.data(), lastcs_.size() * sizeof(lastcs_[0]));
+            if(sa_.size()) {
+                lfp.close();
+                lfp.open(std::string(prefix) + ".sa", "wb"); 
+                lfp.write(sa_.data(), sa_.size() * sizeof(sa_[0]));
+            }
         }
-        if(sa_.size()) {
-            std::FILE *safp = std::fopen((std::string(prefix) + ".sa").data(), "wb");
-            std::fwrite(sa_.data(), sa_.size(), sizeof(sa_[0]), safp);
-            std::fclose(safp);
-        }
-        if(!ofp) throw std::runtime_error("Could not open output file");
+        size_t total_occ_sum =0;
+        std::for_each(arr, arr + map_.size(), [&, rp=remap_parse](const char * x) {
+            uint64_t hv = GLOBAL_HASHER(x);
+            auto ki = map_.get(hv);
+            assert(ki != map_.capacity());
+            std::fputs(x, ofp.ptr());
+            std::fputc(util::EndOfWord, ofp.ptr());
+            std::fwrite(&map_.val(ki).occ_, sizeof(u32), 1, cfp.ptr());
+            total_occ_sum += map_.val(ki).occ_;
+#if 0
+            if(rp) {
+                map_.val(ki).occ_ = ++rank; // occ_ now replaces the 'rank'
+                k2r[hv] = rank;
+            }
+#endif
+        });
+        std::free(arr);
+        LOG_INFO("Total occurrence sum: %zu\n", total_occ_sum);
+#if 0
         size_t total_occ_sum = 0;
         u32 rank = 0;
         std::unordered_map<uint64_t, uint32_t> k2r;
@@ -466,15 +487,14 @@ struct ResultSet {
             assert(ki != map_.capacity());
             std::fputs(x, ofp);
             std::fputc(util::EndOfWord, ofp);
-            std::fwrite(&map_.val(ki).occ_, 1, sizeof(u32), cfp);
+            std::fwrite(&map_.val(ki).occ_, sizeof(u32), 1, cfp);
             total_occ_sum += map_.val(ki).occ_;
             if(rp) {
                 map_.val(ki).occ_ = ++rank; // occ_ now replaces the 'rank'
                 k2r[hv] = rank;
             }
         });
-        std::fprintf(stderr, "Occurrence count: %zu\n", total_occ_sum);
-        std::free(arr);
+        LOG_DEBUG("Occurrence count: %zu\n", total_occ_sum);
         std::fputc(util::EndOfDict, ofp);
         std::fclose(ofp);
         std::fclose(cfp);
@@ -484,6 +504,7 @@ struct ResultSet {
         else
             for(auto v: parses_) std::fwrite(&v, 1, sizeof(v), pfp);
         std::fclose(pfp);
+#endif
     }
     ResultSet &operator=(ResultSet &&) = default;
     void reserve_all(size_t size) {
@@ -503,10 +524,12 @@ struct ResultSet {
             char buf[2048];
             std::sprintf(buf, "ResultSets being merged where presence or absence of suffix array sampling do not agree (%s, %s)\n", C2B(make_sa_), C2B(o.make_sa_));
         }
-        LOG_INFO("Got to inserting iterator ranges\n");
         lastcs_.insert(lastcs_.end(), o.lastcs_.begin(), o.lastcs_.end());
+        std::vector<char>().swap(o.lastcs_);
         parses_.insert(parses_.end(), o.parses_.begin(), o.parses_.end());
+        std::vector<uint64_t>().swap(o.parses_);
         if(make_sa_) sa_.insert(sa_.end(), o.sa_.begin(), o.sa_.end());
+        std::vector<uint64_t>().swap(o.sa_);
         parsed_ += o.parsed_;
         words_ += o.words_;
         skipped_ += o.skipped_;
@@ -520,11 +543,11 @@ struct ResultSet {
             if(o.map_.exist(ki))
                 unique += map_.get(o.map_.key(ki)) == map_.capacity();
         }
-        std::fprintf(stderr, "Unique: %zu\n", unique);
-        std::fprintf(stderr, "Size before merging in: %zu\n", map_.size());
+        LOG_DEBUG("Unique: %zu\n", unique);
+        LOG_DEBUG("Size before merging in: %zu\n", map_.size());
         map_ |= std::move(o.map_);
-        std::fprintf(stderr, "Size after merging in: %zu\n", map_.size());
-        LOG_INFO("Moved\n");
+        LOG_DEBUG("Size after merging in: %zu. Other map: %zu\n", map_.size(), o.map_.size());
+        // LOG_INFO("Moved\n");
         return *this;
     }
 };
@@ -542,13 +565,12 @@ static inline INLINE int nextchar(FpWrapper<PType> &ifp, size_t &bi, std::vector
 }
 
 namespace detail {
-template<typename Hasher>
-void update(ResultSet &rs, u64 *pos, ustring &cstr, const Hasher &h, u32 wsz) {
+void update(ResultSet &rs, u64 *pos, ustring &cstr, u32 wsz) {
     if(cstr.size() <= wsz) {
         LOG_WARNING("String of length %zu/'%s' is too short. Skip!\n", cstr.size(), cstr.data());
         return;
     }
-    auto hv = h(*(std::string *)&cstr);
+    auto hv = GLOBAL_HASHER(*(std::string *)&cstr);
     rs.parses_.push_back(hv);
     rs.map_.insert(hv, cstr);
     rs.lastcs_.push_back(cstr[cstr.size() - 1 - wsz]);
@@ -562,8 +584,10 @@ void update(ResultSet &rs, u64 *pos, ustring &cstr, const Hasher &h, u32 wsz) {
 /*
  Set 'nelem' to 0 to process a full file.
  */
-template<typename Hasher=clhasher, typename PointerType=std::FILE *>
-void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *path) {
+template<typename PointerType=std::FILE *>
+void perform_subwork(std::vector<ResultSet> &results, size_t ind, u32 wsz, const char *path) {
+    auto tid = omp_get_thread_num();
+    auto &rs = results[ind];
     ustring cstr;
     krw::KRWindow krw(wsz);
     std::vector<char> buf(1 << 14);
@@ -572,7 +596,7 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
     ifp.open(path, "rb");
     rs.skipped_ = rs.parsed_ = rs.words_ = 0;
     u64 start = rs.start_, nelem = rs.stop_ - rs.start_;
-    LOG_INFO("About to fill from ifp = %s, with [%zu-%zu)\n", path, start, start + nelem);
+    LOG_INFO("On tid %d, with index %zu, I'm about to fill from ifp = %s, with [%zu-%zu) [results size: %zu]\n", tid, ind, path, start, start + nelem, results.size());
     u64 pos = 0;
     if(start == 0) cstr.push_back(util::Dollar);
     else {
@@ -600,8 +624,8 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
 #endif
         rs.parsed_   = wsz;
         rs.skipped_ -= wsz;
+        assert(cstr.size() == rs.skipped_ + wsz || !LOG_DEBUG("cstr size: %zu. skipped: %zu\n", cstr.size(), rs.skipped_));
         cstr.erase(0, cstr.size() - wsz);
-        assert(cstr.size() == rs.skipped_);
         pos = start + rs.skipped_ + wsz;
     }
     using detail::update;
@@ -614,17 +638,18 @@ void perform_subwork(ResultSet &rs, const Hasher &hasher, u32 wsz, const char *p
         krw.eat(c);
         cstr.push_back(c);
         if(++rs.parsed_ > wsz && (krw.hash % constants::WINDOW_MOD == 0)) {
-            update(rs, &pos, cstr, hasher, wsz);
+            update(rs, &pos, cstr, wsz);
             ++rs.words_;
             if(nelem && rs.skipped_ + rs.parsed_ >= nelem + wsz) {
-                LOG_INFO("Number of expected elements finished.\n");
+                LOG_INFO("tid %d Number of expected elements finished, at position %zu. lastcs size: %zu\n", tid, size_t(rs.start_ + rs.skipped_ + rs.parsed_), rs.lastcs_.size());
                 return;
             }
         }
     }
+    ++rs.words_;
     cstr.insert(cstr.end(), wsz, util::Dollar);
-    update(rs, &pos, cstr, hasher, wsz);
-    LOG_INFO("Finished stuff with final pos = %" PRIu64 "\n", pos);
+    update(rs, &pos, cstr, wsz);
+    LOG_INFO("Finished stuff with tid = %d and final pos = %" PRIu64 ". lastcs size: %zu\n", tid, pos, rs.lastcs_.size());
 }
 
 
@@ -645,6 +670,13 @@ public:
             nthreads = std::thread::hardware_concurrency(); // I want all cores and threads you have.
         make_subs(path, nthreads, makesa);
     }
+    void print_subs() const /* only for debug purposes */ {
+        std::string zomg;
+        for(const auto &r: results_)
+            zomg += std::to_string(r.start_) + '-' + std::to_string(r.stop_) + ',';
+        zomg.back() = '\n';
+        std::fputs(zomg.data(), stderr);
+    }
     void make_subs(const char *path, unsigned nthreads, bool makesa) {
         const size_t fsz = util::get_fsz<PointerType>(path), per_chunk = std::ceil(double(fsz) / nthreads);
         size_t start = 0, stop;
@@ -657,16 +689,21 @@ public:
     }
     //void seed(uint64_t newseed) {h_.seed(newseed);} //
     void run(const char *path=nullptr, bool remap=false) {
-        //#pragma omp parallel
-        for(size_t i = 0; i < results_.size(); ++i) {
-            perform_subwork(results_[i], GLOBAL_HASHER, wsz_, path_.data());
+#if !NDEBUG
+        print_subs();
+#endif
+        #pragma omp parallel for schedule(static,1)
+        for(u32 i = 0; i < results_.size(); ++i) {
+            perform_subwork<PointerType>(results_, i, wsz_, path_.data());
         }
         // TODO: improve the 'reduce' portion of this.
         // It really should be done in parallel in a divide and conquer tree of logarithmic depth.
-        std::fprintf(stderr, "About to merge and destroy from other chunks %zu\n", results_.size());
+        LOG_DEBUG("About to merge and destroy from other chunks %zu\n", results_.size());
+        for(auto &r: results_) LOG_DEBUG("This subresult has %zu lastcs elements\n", r.lastcs_.size());
+        for(auto &r: results_) LOG_DEBUG("This subresult has %zu sa elements\n", r.sa_.size());
         for(size_t i = 1; i < results_.size(); ++i)
             results_[0].merge_and_destroy(std::move(results_[i]));
-        std::fprintf(stderr, "About to clean up from other chunks %zu\n", results_.size());
+        LOG_DEBUG("About to clean up from other chunks %zu\n", results_.size());
         if(results_.size() > 1)
             results_.erase(results_.begin() + 1, results_.end());
         if(path) {
