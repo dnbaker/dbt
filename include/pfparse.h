@@ -736,6 +736,20 @@ public:
     auto w() const {return wsz_;}
 };
 
+template<typename PType>
+int next_string(FpWrapper<PType> &dr, FpWrapper<PType> & ocr, u32 &occ, std::string &ret) {
+    ret.clear();
+    for(int c; (c = dr.getc()) != EOF;) {
+        switch(c) {
+            case util::EndOfWord: ocr.read(occ); return 0;
+            case util::EndOfDict: return 1;
+            default: ret += c;
+        }
+    }
+    throw std::runtime_error("Error! File not terminated with EndOfDict character as expected.");
+    return 0;
+}
+
 
 static void massive_merge(const std::vector<std::string> &paths, const std::string &oprefix, bool make_sa, unsigned num_threads=1) {
     omp_set_num_threads(num_threads);
@@ -748,37 +762,65 @@ static void massive_merge(const std::vector<std::string> &paths, const std::stri
     if(auto fp = popen(cmd.data(), "r"); fp == nullptr) throw std::runtime_error("Could not perform last concatenation.");
     else fps.push_back(fp);
     cmd.clear();
-    cmd += "cat ";
     if(make_sa) {
+        cmd += "cat ";
         for(const auto &p: paths) {
             cmd.sprintf(" %s.sa", p.data());
         }
         cmd.sprintf(" > %s.sa", oprefix.data());
         if(auto fp = popen(cmd.data(), "r"); fp == nullptr) throw std::runtime_error("Could not perform sa concatenation.");
         else fps.push_back(fp);
+        cmd.clear();
     }
-    cmd.clear();
     cmd += "cat ";
     for(const auto &p: paths) {
         cmd.sprintf(" %s.parse", p.data());
     }
     cmd.sprintf(" > %s.parse", oprefix.data());
-    if(auto fp = popen(cmd.data(), "r"); fp == nullptr) throw std::runtime_error("Could not perform last concatenation.");
+    if(auto fp = popen(cmd.data(), "r"); fp == nullptr) throw std::runtime_error("Could not perform parse concatenation.");
     else fps.push_back(fp);
     for(auto fp: fps)
         if(auto i = std::fclose(fp); i != 0)
             throw std::runtime_error("Error in popen process.");
     std::vector<FpWrapper<std::FILE *>> dreaders(paths.size()), oreaders(paths.size());
     std::vector<size_t> sizes(paths.size());
-
+    std::vector<std::string> strings(paths.size());
+    std::vector<u32> occ_counts(paths.size());
+    const size_t N = paths.size();
     #pragma omp parallel for
     for(size_t i = 0; i < dreaders.size(); ++i) {
         dreaders[i].open(paths[i] + ".dict");
         oreaders[i].open(paths[i] + ".occ");
         sizes[i] = util::get_fsz<std::FILE *>(paths[i] + ".occ") >> 2;
     }
-    khmap master_map;
-    master_map.reserve(*std::max_element(sizes.begin(), sizes.end()));
+    FpWrapper<std::FILE *> finalfp, foccfp;
+    finalfp.open(oprefix + ".dict", "wb");
+    foccfp.open(oprefix + ".occ", "wb");
+    for(size_t i = 0; i < N; ++i)
+        if(next_string(dreaders[i], oreaders[i], occ_counts[i], strings[i])) throw std::runtime_error("Could not get first phrases from files.");
+    do {
+        size_t i = std::min_element(strings.begin(), strings.end()) - strings.begin();
+        std::set<size_t, std::greater<size_t>> to_increment;
+        for(auto &s: strings) {
+            if(s == strings[i])
+                to_increment.insert(&s - strings.data());
+        }
+        u32 final_occ = 0;
+        for(auto i: to_increment) final_occ += occ_counts[i];
+        finalfp.write(strings[i]);
+        finalfp.write(util::EndOfWord);
+        foccfp.write(final_occ);
+        for(auto i: to_increment) {
+            if(auto v = next_string(dreaders[i], oreaders[i], occ_counts[i], strings[i]); v) { // End of file
+                dreaders.erase(dreaders.begin() + v);
+                oreaders.erase(oreaders.begin() + v);
+                strings.erase(strings.begin() + v);
+                occ_counts.erase(occ_counts.begin() + v);
+            }
+        }
+        /* append lowest lexicographic, keep going. */
+    } while(dreaders.size()); // Until we've exhausted all of these things.
+    finalfp.write(util::EndOfDict);
     throw std::runtime_error("NotImplemented.");
     // 4. Merge dictionary
 }
