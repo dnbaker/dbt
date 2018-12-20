@@ -16,3 +16,6 @@
 [submodule "clhash"]
 	path = clhash
 	url = https://github.com/lemire/clhash
+[submodule "pdqsort"]
+	path = pdqsort
+	url = https://github.com/orlp/pdqsort

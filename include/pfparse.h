@@ -36,7 +36,7 @@ using ustring = std::basic_string<unsigned char>;
 using namespace std::literals;
 using fp::FpWrapper;
 
-#if 0
+#if 1
 static const clhasher GLOBAL_HASHER(13, 137);
 #else
 struct charhash {
@@ -185,6 +185,7 @@ public:
         insert(v, (const char *)s.data(), s.size());
     }
     void insert(u64 v, const char *s, size_t nelem) {
+        assert(GLOBAL_HASHER(s, nelem) == v);
         if(auto ki = get(v); !is_end(ki)) {
             assert(this->vals[ki].s_);
             if(unlikely(std::strcmp(s, this->vals[ki].s_))) {
@@ -212,11 +213,13 @@ public:
     }
     const khash_t(m) *map() const {return this;}
     void insert(u64 v, const char *s) {insert(v, s, std::strlen(s));}
+#if 0
     template<typename T>
     void insert(u64 v, const T &s) {
         std::string t(s.begin(), s.end());
         insert(v, t.data(), t.size());
     }
+#endif
     khmap(khmap &&m) {std::memset(this, 0, sizeof(*this)); *this = std::move(m);}
     operator       khash_t(m) *()        {return reinterpret_cast<khash_t(m) *>(this);}
     operator const khash_t(m) *()  const {return reinterpret_cast<const khash_t(m) *>(this);}
@@ -458,10 +461,17 @@ struct ResultSet {
             }
         }
         size_t total_occ_sum =0;
+        unsigned failnum = 0;
         std::for_each(arr, arr + map_.size(), [&, rp=remap_parse](const char * x) {
             uint64_t hv = GLOBAL_HASHER(x);
             auto ki = map_.get(hv);
-            assert(ki != map_.capacity());
+            if(ki == map_.capacity()) {
+                auto f = std::fopen((std::string("log.out.") + std::to_string(++failnum)).data(), "wb");
+                std::fprintf(f, "Failure. Missing key %" PRIu64 " with string %s\n", hv, x);
+                map_.for_each([&](auto k, const auto &h) {std::fprintf(f, "key %" PRIu64 " with string %s\n", k, h.s_);});
+                std::fclose(f);
+                return;
+            }
             std::fputs(x, ofp.ptr());
             std::fputc(util::EndOfWord, ofp.ptr());
             std::fwrite(&map_.val(ki).occ_, sizeof(u32), 1, cfp.ptr());
@@ -570,7 +580,8 @@ void update(ResultSet &rs, u64 *pos, ustring &cstr, u32 wsz) {
         LOG_WARNING("String of length %zu/'%s' is too short. Skip!\n", cstr.size(), cstr.data());
         return;
     }
-    auto hv = GLOBAL_HASHER(*(std::string *)&cstr);
+    auto hv = GLOBAL_HASHER(cstr);
+    assert(hv == GLOBAL_HASHER(cstr));
     rs.parses_.push_back(hv);
     rs.map_.insert(hv, cstr);
     rs.lastcs_.push_back(cstr[cstr.size() - 1 - wsz]);
@@ -695,6 +706,10 @@ public:
         #pragma omp parallel for schedule(static,1)
         for(u32 i = 0; i < results_.size(); ++i) {
             perform_subwork<PointerType>(results_, i, wsz_, path_.data());
+        }
+        for(u32 i = 0; i < results_.size(); ++i) {
+            auto &rs = results_[i];
+            rs.map_.for_each([&](auto key, const hit_t &h) {assert(GLOBAL_HASHER(h.s_) == key);});
         }
         // TODO: improve the 'reduce' portion of this.
         // It really should be done in parallel in a divide and conquer tree of logarithmic depth.
