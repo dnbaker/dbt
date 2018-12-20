@@ -24,12 +24,10 @@ std::vector<std::string> load_from_file(const char *path) {
 
 
 
-std::string sanitize(std::string in) {
-    char *s;
-    if((s = std::strrchr(in.data(), '/')) != nullptr)
-        in = std::string(s + 1, in.data() + in.size());
-    return in;
-}
+std::string sanitize(std::string in) {                                                                      
+    if(auto i = in.rfind('/'); i != std::string::npos) in = std::string(i + 1 + in.begin(), in.end()); 
+    return in;                                                                                         
+}    
 
 int main(int argc, char *argv[]) {
     if(std::find_if(argv, argv + argc, [](auto x) {return std::strcmp(x, "--help") == 0;}) != argv + argc)
@@ -51,8 +49,9 @@ int main(int argc, char *argv[]) {
     if(argc == o.ind && paths.empty()) usage(); // No paths
     if(paths.empty())
         paths = std::vector<std::string>(argv + o.ind, argv + argc);
-    for(const auto &p: paths) {
-        dbt::HashPasser<gzFile> hp(p.data(), wsz, nthreads, true);
-        hp.run(sanitize(p).data());
+    #pragma omp parallel for schedule(static,1)
+    for(size_t i = 0; i < paths.size(); ++i) {
+        dbt::HashPasser<gzFile> hp(paths[i].data(), wsz, 1, true);
+        hp.run(sanitize(paths[i]).data());
     }
 }

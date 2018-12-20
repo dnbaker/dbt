@@ -467,17 +467,10 @@ struct ResultSet {
             }
         }
         size_t total_occ_sum =0;
-        unsigned failnum = 0;
         std::for_each(arr, arr + map_.size(), [&, rp=remap_parse](const char * x) {
             uint64_t hv = GLOBAL_HASHER(x);
             auto ki = map_.get(hv);
-            if(ki == map_.capacity()) {
-                auto f = std::fopen((std::string("log.out.") + std::to_string(++failnum)).data(), "wb");
-                std::fprintf(f, "Failure. Missing key %" PRIu64 " with string %s\n", hv, x);
-                map_.for_each([&](auto k, const auto &h) {std::fprintf(f, "key %" PRIu64 " with string %s\n", k, h.s_);});
-                std::fclose(f);
-                return;
-            }
+            assert(ki != map_.capacity());
             std::fputs(x, ofp.ptr());
             std::fputc(util::EndOfWord, ofp.ptr());
             std::fwrite(&map_.val(ki).occ_, sizeof(u32), 1, cfp.ptr());
@@ -709,7 +702,7 @@ public:
 #if !NDEBUG
         print_subs();
 #endif
-        #pragma omp parallel for schedule(static,1)
+        //#pragma omp parallel for schedule(static,1)
         for(u32 i = 0; i < results_.size(); ++i) {
             perform_subwork<PointerType>(results_, i, wsz_, path_.data());
         }
